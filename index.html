@@ -1,0 +1,896 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>残高の見通し</title>
+<style>
+  :root {
+    --bg: #121519;
+    --surface: #1a1e24;
+    --surface-2: #232831;
+    --line: #2d343e;
+    --text: #e8eaed;
+    --muted: #8b939e;
+    --faint: #5c6570;
+    --bal: #5cc2ad;
+    --income: #78a9de;
+    --out: #d8a13f;
+    --card: #e46f7a;
+    --warn: #e8b04a;
+    --num: ui-rounded, "SF Pro Rounded", -apple-system, "Hiragino Sans", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { background: var(--bg); }
+  body {
+    font-family: -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    color: var(--text); font-size: 15px; line-height: 1.55;
+    padding: env(safe-area-inset-top) 0 calc(env(safe-area-inset-bottom) + 84px);
+    -webkit-font-smoothing: antialiased; overflow-x: hidden;
+  }
+  .wrap { max-width: 560px; margin: 0 auto; padding: 0 16px; }
+  .num { font-family: var(--num); font-variant-numeric: tabular-nums; }
+  header.top { padding: 14px 0 6px; }
+  header.top h1 { font-size: 20px; font-weight: 700; letter-spacing: .02em; }
+  h3 { font-size: 14px; color: var(--muted); font-weight: 600; margin: 22px 0 8px; }
+
+  .btn { font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--surface-2); color: var(--text);
+         padding: 8px 14px; border-radius: 9px; cursor: pointer; }
+  .btn.primary { background: var(--bal); border-color: var(--bal); color: #0d1a17; font-weight: 700; }
+  .btn.ghost { background: transparent; }
+  .btn.danger { color: var(--card); border-color: rgba(228,111,122,.4); background: transparent; }
+  .btn.small { font-size: 12.5px; padding: 5px 10px; }
+  .btn.block { width: 100%; padding: 12px; }
+  .btn:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--bal); outline-offset: 2px; }
+
+  /* 現在残高 */
+  .now { display: flex; justify-content: space-between; align-items: flex-end; padding: 6px 0 4px; }
+  .now .lbl { font-size: 12.5px; color: var(--muted); }
+  .now .big { font-family: var(--num); font-size: 34px; font-weight: 700; letter-spacing: -.01em; line-height: 1.15; }
+
+  /* 判定 */
+  .verdict { margin-top: 12px; padding: 12px 14px; border-radius: 10px; border-left: 3px solid var(--bal);
+             background: rgba(92,194,173,.08); font-size: 14px; }
+  .verdict.warn { border-left-color: var(--warn); background: rgba(232,176,74,.09); }
+  .verdict.danger { border-left-color: var(--card); background: rgba(228,111,122,.10); }
+  .verdict strong { font-weight: 700; }
+  .notes { margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+  .notes li { list-style: none; padding-left: 12px; position: relative; }
+  .notes li::before { content: ""; position: absolute; left: 0; top: .7em; width: 5px; height: 5px; border-radius: 50%; background: var(--warn); }
+
+  /* グラフ */
+  .chart-box { margin-top: 16px; background: var(--surface); border-radius: 12px; padding: 12px 8px 8px; }
+  .readout { min-height: 40px; padding: 0 6px 6px; font-size: 13px; }
+  .readout .rb { font-family: var(--num); font-size: 18px; font-weight: 700; }
+  .readout .rd { color: var(--muted); font-size: 12px; }
+  #chart svg { display: block; width: 100%; height: auto; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+  .range { display: flex; gap: 6px; justify-content: flex-end; padding: 6px 4px 0; }
+  .range button { font: inherit; font-size: 12px; background: none; border: 1px solid var(--line); color: var(--muted); padding: 3px 10px; border-radius: 20px; }
+  .range button.on { color: var(--text); border-color: var(--bal); }
+  .legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--muted); padding: 6px 6px 0; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
+
+  /* 入出金リスト */
+  .events { list-style: none; }
+  .events li { display: grid; grid-template-columns: 74px 1fr auto; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+  .events .d { font-size: 12.5px; color: var(--muted); }
+  .events .n { font-size: 14px; }
+  .events .sub { display: block; font-size: 11.5px; color: var(--faint); }
+  .events .a { text-align: right; font-family: var(--num); font-variant-numeric: tabular-nums; font-size: 14px; }
+  .events .a .after { display: block; font-size: 11.5px; color: var(--faint); }
+  .in { color: var(--income); } .out { color: var(--out); } .cardc { color: var(--card); }
+  .tag { display: inline-block; font-size: 10.5px; padding: 0 6px; border-radius: 4px; border: 1px dashed var(--faint); color: var(--muted); margin-left: 6px; vertical-align: 1px; }
+
+  /* カード・収支 */
+  .item { background: var(--surface); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+  .item header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .item h4 { font-size: 16px; font-weight: 700; }
+  .meta { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+  .kv { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; margin-top: 10px; font-size: 13.5px; }
+  .kv .k { color: var(--muted); }
+  .kv .v { text-align: right; font-family: var(--num); font-variant-numeric: tabular-nums; }
+  .pays { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+  .pay { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13.5px; }
+  .pay .break { display: block; font-size: 11.5px; color: var(--faint); }
+  .item .actions { display: flex; gap: 8px; margin-top: 12px; }
+  details { margin-top: 10px; font-size: 13px; }
+  summary { color: var(--muted); cursor: pointer; }
+  .hist { list-style: none; margin-top: 6px; }
+  .hist li { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); gap: 8px; }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; background: var(--surface); border-radius: 10px; margin-bottom: 8px; cursor: pointer; gap: 10px; }
+  .row .rn { font-size: 14.5px; }
+  .row .rm { font-size: 12px; color: var(--muted); }
+  .row .ra { font-family: var(--num); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  .sec-head { display: flex; justify-content: space-between; align-items: center; margin: 22px 0 8px; }
+  .sec-head h3 { margin: 0; }
+  .empty { text-align: center; padding: 48px 12px; color: var(--muted); font-size: 14px; }
+  .empty p { margin-bottom: 16px; }
+  .hint { font-size: 12.5px; color: var(--muted); margin: 6px 0 0; }
+
+  /* タブ */
+  nav.tabs { position: fixed; left: 0; right: 0; bottom: 0; background: rgba(18,21,25,.94); backdrop-filter: blur(12px);
+             -webkit-backdrop-filter: blur(12px); border-top: 1px solid var(--line); display: flex;
+             padding: 6px 0 calc(env(safe-area-inset-bottom) + 6px); z-index: 10; }
+  nav.tabs button { flex: 1; font: inherit; font-size: 12px; background: none; border: none; color: var(--faint); padding: 8px 0; }
+  nav.tabs button.on { color: var(--text); font-weight: 700; }
+
+  /* シート */
+  #sheetBg { position: fixed; inset: 0; background: rgba(0,0,0,.55); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 20; }
+  #sheet { position: fixed; left: 0; right: 0; bottom: 0; max-height: 88vh; overflow-y: auto; background: var(--surface);
+           border-radius: 16px 16px 0 0; transform: translateY(100%); transition: transform .25s ease; z-index: 21;
+           padding: 0 0 calc(env(safe-area-inset-bottom) + 16px); }
+  body.sheet-open #sheetBg { opacity: 1; pointer-events: auto; }
+  body.sheet-open #sheet { transform: none; }
+  .sheet-head { position: sticky; top: 0; background: var(--surface); display: flex; justify-content: space-between; align-items: center;
+                padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+  .sheet-head h2 { font-size: 16px; }
+  .sheet-body { padding: 8px 16px 0; max-width: 560px; margin: 0 auto; }
+  .f { margin-top: 14px; }
+  .f > label, .f > .flabel { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
+  .f input, .f select, .f textarea { width: 100%; font: inherit; font-size: 16px; background: var(--bg); color: var(--text);
+            border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; }
+  .f textarea { font-size: 12px; min-height: 120px; font-family: ui-monospace, Menlo, monospace; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .seg { display: flex; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 3px; }
+  .seg label { flex: 1; text-align: center; font-size: 13px; padding: 7px 4px; border-radius: 7px; color: var(--muted); cursor: pointer; }
+  .seg input { display: none; }
+  .seg label:has(input:checked) { background: var(--surface-2); color: var(--text); font-weight: 700; }
+  .preview { margin-top: 14px; padding: 10px 12px; border-radius: 9px; background: var(--bg); font-size: 13px; }
+  .preview.bad { color: var(--card); }
+  .sheet-actions { display: flex; gap: 8px; margin-top: 20px; }
+  .sheet-actions .btn { flex: 1; padding: 12px; }
+  .conf-box { margin-top: 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+  @media (prefers-reduced-motion: reduce) { #sheet, #sheetBg { transition: none; } }
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap"><h1 id="pageTitle">見通し</h1></div></header>
+<main class="wrap" id="view"></main>
+
+<nav class="tabs">
+  <button data-tab="home" class="on">見通し</button>
+  <button data-tab="cards">カード</button>
+  <button data-tab="flows">収支</button>
+  <button data-tab="settings">設定</button>
+</nav>
+
+<div id="sheetBg"></div>
+<section id="sheet" aria-modal="true" role="dialog">
+  <div class="sheet-head"><h2 id="sheetTitle"></h2><button class="btn small ghost" id="sheetClose">閉じる</button></div>
+  <div class="sheet-body" id="sheetBody"></div>
+</section>
+
+<script>
+/* ================= 保存 ================= */
+const KEY = 'cashflow-v1';
+const defaultState = () => ({ bank: null, safeLine: 10000, horizon: 90, cards: [], subs: [], flows: [] });
+let S = load();
+function load() {
+  try { const r = localStorage.getItem(KEY); if (r) return migrate(Object.assign(defaultState(), JSON.parse(r))); } catch (e) {}
+  return defaultState();
+}
+function migrate(st) { // 旧形式（未確定額入力）からの変換
+  for (const c of st.cards || []) {
+    c.bills = c.bills || {}; if (c.confirmAfter == null) c.confirmAfter = 15;
+    c.snaps = (c.snaps || []).map(x => {
+      const conf = x.confirmed || {};
+      for (const [k, v] of Object.entries(conf)) if (!c.bills[k]) c.bills[k] = { amount: Number(v), kind: 'estimate' };
+      if (x.available != null) return { date: x.date, available: Number(x.available) };
+      const U = Object.values(conf).reduce((a, b) => a + Number(b), 0) + Number(x.unconfirmed || 0);
+      return { date: x.date, available: Number(c.limit) - U };
+    });
+  }
+  return st;
+}
+function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { alert('保存できなかった。ブラウザの容量や設定を確認してほしい。'); } }
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+/* ================= 日付 ================= */
+const pad = n => String(n).padStart(2, '0');
+const isoOf = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parse = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const today = () => isoOf(new Date());
+const addDays = (s, n) => { const d = parse(s); d.setDate(d.getDate() + n); return isoOf(d); };
+const dim = (y, m) => new Date(y, m + 1, 0).getDate();
+function clampDate(y, m, day) {
+  const b = new Date(y, m, 1); const Y = b.getFullYear(), M = b.getMonth();
+  return isoOf(new Date(Y, M, Math.min(Number(day), dim(Y, M))));
+}
+const ymOf = s => s.slice(0, 7);
+const daysBetween = (a, b) => Math.round((parse(b) - parse(a)) / 86400000);
+const WD = '日月火水木金土';
+const fmtD = s => { const d = parse(s); return `${d.getMonth() + 1}月${d.getDate()}日(${WD[d.getDay()]})`; };
+const fmtYM = k => { const [y, m] = k.split('-'); return `${y}年${Number(m)}月`; };
+const yen = n => (n < 0 ? '−' : '') + '¥' + Math.abs(Math.round(n)).toLocaleString('ja-JP');
+const num = v => { const n = Number(String(v ?? '').replace(/[,，¥￥\s]/g, '')); return isFinite(n) ? n : NaN; };
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const dayLabel = d => Number(d) >= 31 ? '末日' : `${d}日`;
+
+/* ================= カードの締め・引落 ================= */
+// 締め日が31なら「末日」として扱う。引落日が土日なら翌月曜にずらす（祝日は未対応）
+function closingIn(card, y, m) { return clampDate(y, m, card.closeDay); }
+function lastClosingBefore(card, D) { // D より前の直近の締め日
+  const d = parse(D); const c = closingIn(card, d.getFullYear(), d.getMonth());
+  return c < D ? c : closingIn(card, d.getFullYear(), d.getMonth() - 1);
+}
+function prevClosing(card, c) { const d = parse(c); return closingIn(card, d.getFullYear(), d.getMonth() - 1); }
+function cycleOf(card, D) { // D の利用が属する締め日
+  const d = parse(D); const c = closingIn(card, d.getFullYear(), d.getMonth());
+  return c >= D ? c : closingIn(card, d.getFullYear(), d.getMonth() + 1);
+}
+function paymentFor(card, c) {
+  const d = parse(c);
+  const p = parse(clampDate(d.getFullYear(), d.getMonth() + Number(card.payOffset || 1), card.payDay));
+  const w = p.getDay(); if (w === 6) p.setDate(p.getDate() + 2); else if (w === 0) p.setDate(p.getDate() + 1);
+  return isoOf(p);
+}
+function unpaidClosings(card, D) { // D時点で締まっているが未引落の締め日
+  const out = []; let c = lastClosingBefore(card, D); let i = 0;
+  while (paymentFor(card, c) > D && i < 4) { out.unshift(c); c = prevClosing(card, c); i++; }
+  return out;
+}
+const latestSnap = card => (card.snaps && card.snaps.length) ? card.snaps[card.snaps.length - 1] : null;
+const unpaidOf = (card, sn) => Number(card.limit) - Number(sn.available); // 未引落の利用総額
+function closingsBetween(card, a, b) { // (a, b] にある締め日
+  const out = []; let c = cycleOf(card, a); if (c === a) c = cycleOf(card, addDays(a, 1));
+  while (c <= b && out.length < 24) { out.push(c); c = cycleOf(card, addDays(c, 1)); }
+  return out;
+}
+// 締めごとの金額。自分で入れたもの（確定・推定）を優先し、無ければ前後の入力を日数で按分して自動推定
+function deriveBills(card, extraSnap) {
+  const bills = {}; for (const [c, v] of Object.entries(card.bills || {})) bills[c] = { ...v };
+  let snaps = (card.snaps || []).slice();
+  if (extraSnap) { snaps = snaps.filter(x => x.date !== extraSnap.date); snaps.push(extraSnap); snaps.sort((x, y) => x.date < y.date ? -1 : 1); }
+  const amt = c => bills[c] ? Number(bills[c].amount) : 0;
+  for (let i = 1; i < snaps.length; i++) {
+    const a = snaps[i - 1], b = snaps[i];
+    const cs = closingsBetween(card, a.date, b.date);
+    if (!cs.length) continue;
+    const openAtA = unpaidClosings(card, a.date);
+    let paid = 0; for (const c of openAtA) if (paymentFor(card, c) <= b.date) paid += amt(c);
+    const unconfA = unpaidOf(card, a) - openAtA.reduce((x, c) => x + amt(c), 0);
+    const usage = unpaidOf(card, b) - unpaidOf(card, a) + paid;
+    const total = Math.max(daysBetween(a.date, b.date), 1);
+    cs.forEach((c, k) => {
+      const from = k === 0 ? a.date : cs[k - 1];
+      const v = (k === 0 ? unconfA : 0) + usage * daysBetween(from, c) / total;
+      if (!bills[c]) bills[c] = { amount: Math.max(0, Math.round(v)), kind: 'auto' };
+    });
+  }
+  return bills;
+}
+function stateAt(card, sn, bills) {
+  const closed = unpaidClosings(card, sn.date).map(c => ({ c, pay: paymentFor(card, c), amount: bills[c] ? Number(bills[c].amount) : 0, kind: bills[c] ? bills[c].kind : 'none' }));
+  const U = unpaidOf(card, sn);
+  const raw = U - closed.reduce((x, o) => x + o.amount, 0);
+  return { closed, U, unconf: Math.max(0, raw), neg: raw < 0 ? raw : 0 };
+}
+function usageBetween(card, a, b, bills) {
+  let paid = 0;
+  for (const c of unpaidClosings(card, a.date)) if (paymentFor(card, c) <= b.date) paid += bills[c] ? Number(bills[c].amount) : 0;
+  return unpaidOf(card, b) - unpaidOf(card, a) + paid;
+}
+// 確定額を聞き始める日：締め日のN日後（引落日の前日を超えない）
+function askFrom(card, c) { const x = addDays(c, Number(card.confirmAfter ?? 15)); const y = addDays(paymentFor(card, c), -1); return x < y ? x : y; }
+function pendingConfirms(card, D, bills) {
+  return unpaidClosings(card, D).filter(c => D >= askFrom(card, c) && !(bills[c] && bills[c].kind === 'confirmed'));
+}
+const kindLabel = k => ({ confirmed: '確定', estimate: '自分の推定', auto: '自動推定', none: '未設定' }[k] || '');
+
+/* ================= サブスク ================= */
+function subChargeDates(sub, from, to) { // (from, to] の課金日
+  const res = []; const a = parse(from);
+  for (let i = 0; i < 48; i++) {
+    const b = new Date(a.getFullYear(), a.getMonth() + i, 1);
+    if (sub.freq === 'yearly' && b.getMonth() !== Number(sub.month) - 1) { if (isoOf(b) > to) break; continue; }
+    const dt = clampDate(b.getFullYear(), b.getMonth(), sub.day);
+    if (dt > to) break; if (dt > from) res.push(dt);
+  }
+  return res;
+}
+
+/* ================= 見通しの計算 ================= */
+function forecast() {
+  if (!S.bank) return null;
+  const start = S.bank.date, end = addDays(start, S.horizon);
+  const ev = [];
+
+  // 収入・支出
+  for (const f of S.flows) {
+    const sign = f.kind === 'in' ? 1 : -1;
+    if (f.freq === 'once') {
+      if (f.date > start && f.date <= end) ev.push({ date: f.date, amount: sign * f.amount, label: f.name, kind: f.kind, est: false });
+      continue;
+    }
+    const a = parse(start);
+    for (let i = 0; i < 40; i++) {
+      const dt = clampDate(a.getFullYear(), a.getMonth() + i, f.day);
+      if (dt > end) break; if (dt <= start) continue;
+      const k = ymOf(dt); const ov = f.freq === 'variable' && f.overrides && f.overrides[k] != null;
+      ev.push({ date: dt, amount: sign * (ov ? f.overrides[k] : f.amount), label: f.name, kind: f.kind, est: f.freq === 'variable' && !ov });
+    }
+  }
+
+  // カード
+  const cardInfo = {};
+  for (const card of S.cards) {
+    const snap = latestSnap(card);
+    const bills = deriveBills(card);
+    const st = snap ? stateAt(card, snap, bills) : null;
+    const D = snap ? snap.date : start;
+    const cycles = {};
+    const get = c => cycles[c] || (cycles[c] = { base: 0, est: 0, subs: 0, subsIn: 0, final: false, kind: 'open' });
+    if (st) for (const o of st.closed) { const g = get(o.c); g.base = o.amount; g.final = o.kind === 'confirmed'; g.kind = o.kind; }
+    const cc = cycleOf(card, D); const cur = get(cc); cur.base = st ? st.unconf : 0;
+    const mySubs = S.subs.filter(s => s.cardId === card.id);
+    for (const s of mySubs) for (const _ of subChargeDates(s, prevClosing(card, cc), D)) cur.subsIn += Number(s.amount);
+    const est = Number(card.dailyEst) || 0;
+    if (est > 0) for (let d = addDays(D, 1); d <= end; d = addDays(d, 1)) get(cycleOf(card, d)).est += est;
+    for (const s of mySubs) for (const dt of subChargeDates(s, D, end)) get(cycleOf(card, dt)).subs += Number(s.amount);
+
+    const pays = [];
+    for (const [c, v] of Object.entries(cycles)) {
+      const p = paymentFor(card, c);
+      if (p > start && p <= end && (v.base + v.est + v.subs) > 0) {
+        const total = v.base + v.est + v.subs;
+        const item = { closing: c, pay: p, ...v, total };
+        pays.push(item);
+        ev.push({ date: p, amount: -total, label: card.name + ' 引落', kind: 'card', est: !v.final, info: item });
+      }
+    }
+    cardInfo[card.id] = { snap, st, bills, pays: pays.sort((a, b) => a.pay < b.pay ? -1 : 1) };
+  }
+
+  ev.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : a.amount - b.amount);
+
+  // 日ごとの残高（同じ日は出金を先に引いて最低値を見る＝安全側）
+  const byDay = {}; for (const e of ev) (byDay[e.date] || (byDay[e.date] = [])).push(e);
+  let running = Number(S.bank.amount);
+  const series = [{ date: start, bal: running, low: running }];
+  for (let d = addDays(start, 1); d <= end; d = addDays(d, 1)) {
+    const list = byDay[d] || []; let outs = 0, ins = 0;
+    for (const e of list) { if (e.amount < 0) outs += e.amount; else ins += e.amount; }
+    const low = running + outs; running = low + ins;
+    series.push({ date: d, bal: running, low });
+    for (const e of list) e.balAfter = running;
+  }
+  let minI = 0; series.forEach((p, i) => { if (p.low < series[minI].low) minI = i; });
+  const firstNeg = series.find(p => p.low < 0);
+  const firstSafe = series.find(p => p.low < S.safeLine);
+  return { start, end, ev, series, minI, firstNeg, firstSafe, cardInfo, byDay };
+}
+
+/* ================= 画面 ================= */
+const $ = s => document.querySelector(s);
+let tab = 'home';
+const titles = { home: '見通し', cards: 'カード', flows: '収支', settings: '設定' };
+
+function render() {
+  $('#pageTitle').textContent = titles[tab];
+  document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+  ({ home: renderHome, cards: renderCards, flows: renderFlows, settings: renderSettings })[tab]();
+  window.scrollTo(0, 0);
+}
+
+/* ---------- 見通し ---------- */
+function breakText(i) {
+  let t = i.kind !== 'open' ? `${kindLabel(i.kind)} ${yen(i.base)}` : `入力時点の利用 ${yen(i.base)}` + (i.est ? ` ＋想定 ${yen(i.est)}` : '') + (i.subs ? ` ＋サブスク ${yen(i.subs)}` : '');
+  if (i.subsIn + i.subs > 0) t += `（うちサブスク ${yen(i.subsIn + i.subs)}）`;
+  return t;
+}
+function renderHome() {
+  const v = $('#view');
+  if (!S.bank) {
+    v.innerHTML = `<div class="empty"><p>最初に今日の口座残高を入れる。<br>ここを起点に、収入と引落しを日付順に積み上げて見通しを出す。</p>
+      <button class="btn primary" data-act="bank">口座残高を入力</button></div>`;
+    return;
+  }
+  const F = forecast();
+  const minP = F.series[F.minI];
+  let cls = '', msg;
+  if (F.firstNeg) { cls = 'danger'; msg = `<strong>${fmtD(F.firstNeg.date)}</strong> に残高がマイナス（<span class="num">${yen(F.firstNeg.low)}</span>）になる見込み。`; }
+  else if (F.firstSafe) { cls = 'warn'; msg = `<strong>${fmtD(F.firstSafe.date)}</strong> に安全ライン ${yen(S.safeLine)} を下回る（<span class="num">${yen(F.firstSafe.low)}</span>）見込み。`; }
+  else msg = `${S.horizon}日先まで安全ライン以上。最も低いのは <strong>${fmtD(minP.date)}</strong> の <span class="num">${yen(minP.low)}</span>。`;
+
+  const notes = [];
+  const bAge = daysBetween(S.bank.date, today());
+  if (bAge >= 3) notes.push(`口座残高の入力が${bAge}日前のまま`);
+  for (const c of S.cards) {
+    const s = latestSnap(c);
+    if (!s) { notes.push(`${esc(c.name)}：利用可能額が未入力（0円として計算中）`); continue; }
+    const a = daysBetween(s.date, today()); if (a >= 7) notes.push(`${esc(c.name)}：最終入力から${a}日`);
+    const info = F.cardInfo[c.id];
+    for (const cl of pendingConfirms(c, today(), info.bills)) notes.push(`${esc(c.name)}：${fmtD(cl)}締めの確定額が未入力（カードタブから）`);
+    if (info.st && info.st.neg) notes.push(`${esc(c.name)}：締め分の金額が利用総額を上回っている（カードタブで確認）`);
+  }
+  if (!S.cards.length) notes.push('カードが未登録');
+
+  const upcoming = F.ev.slice(0, 20).map(e => {
+    let sub = '';
+    if (e.kind === 'card') {
+      const i = e.info;
+      sub = breakText(i);
+    }
+    const c = e.kind === 'in' ? 'in' : e.kind === 'card' ? 'cardc' : 'out';
+    return `<li><span class="d">${fmtD(e.date)}</span>
+      <span class="n">${esc(e.label)}${e.est ? '<span class="tag">見込み</span>' : ''}${sub ? `<span class="sub">${sub}</span>` : ''}</span>
+      <span class="a ${c}">${e.amount > 0 ? '+' : ''}${yen(e.amount)}<span class="after">残 ${yen(e.balAfter)}</span></span></li>`;
+  }).join('');
+
+  v.innerHTML = `
+    <section class="now">
+      <div><div class="lbl">口座残高　${fmtD(S.bank.date)}時点</div><div class="big">${yen(S.bank.amount)}</div></div>
+      <button class="btn ghost" data-act="bank">更新</button>
+    </section>
+    <section class="verdict ${cls}">${msg}${notes.length ? `<ul class="notes">${notes.map(n => `<li>${n}</li>`).join('')}</ul>` : ''}</section>
+    <section class="chart-box">
+      <div class="readout" id="readout"></div>
+      <div id="chart"></div>
+      <div class="legend"><span><i style="background:var(--bal)"></i>残高</span><span><i style="background:var(--card)"></i>カード引落</span><span><i style="background:var(--warn)"></i>安全ライン</span></div>
+      <div class="range">${[30, 90, 180].map(r => `<button data-range="${r}" class="${S.horizon === r ? 'on' : ''}">${r === 30 ? '1か月' : r === 90 ? '3か月' : '6か月'}</button>`).join('')}</div>
+    </section>
+    <h3>これからの入出金</h3>
+    ${upcoming ? `<ul class="events">${upcoming}</ul>` : `<p class="hint">期間内に予定された入出金はない。収支タブで収入・家賃などを登録する。</p>`}`;
+  drawChart(F);
+}
+
+function drawChart(F) {
+  const W = 360, H = 190, pl = 4, pr = 4, pt = 12, pb = 20;
+  const s = F.series, n = s.length;
+  let lo = Math.min(0, S.safeLine, ...s.map(p => p.low));
+  let hi = Math.max(S.safeLine, ...s.map(p => p.bal));
+  if (hi === lo) hi = lo + 1;
+  const pv = (hi - lo) * 0.08; hi += pv; if (lo < 0) lo -= pv;
+  const X = i => pl + (W - pl - pr) * i / Math.max(n - 1, 1);
+  const Y = v => pt + (H - pt - pb) * (1 - (v - lo) / (hi - lo));
+  let d = `M${X(0).toFixed(1)},${Y(s[0].bal).toFixed(1)}`;
+  for (let i = 1; i < n; i++) d += ` H${X(i).toFixed(1)} V${Y(s[i].low).toFixed(1)} V${Y(s[i].bal).toFixed(1)}`;
+  const area = d + ` V${Y(lo).toFixed(1)} H${X(0).toFixed(1)} Z`;
+
+  let ticks = '';
+  s.forEach((p, i) => {
+    if (p.date.endsWith('-01')) {
+      ticks += `<line x1="${X(i)}" x2="${X(i)}" y1="${pt}" y2="${H - pb}" stroke="#2d343e" stroke-width="1"/>
+        <text x="${X(i) + 3}" y="${H - 6}" fill="#5c6570" font-size="10">${Number(p.date.slice(5, 7))}月</text>`;
+    }
+  });
+  let marks = '';
+  for (const e of F.ev) if (e.kind === 'card') {
+    const i = daysBetween(F.start, e.date);
+    marks += `<circle cx="${X(i)}" cy="${Y(s[i].bal)}" r="3.2" fill="#e46f7a" stroke="#1a1e24" stroke-width="1.5"/>`;
+  }
+  const mi = F.minI;
+  const safeY = Y(S.safeLine), zeroY = Y(0);
+  $('#chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" id="svg">
+    <defs><linearGradient id="g" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#5cc2ad" stop-opacity=".22"/><stop offset="1" stop-color="#5cc2ad" stop-opacity="0"/></linearGradient></defs>
+    ${ticks}
+    ${lo < 0 ? `<line x1="${pl}" x2="${W - pr}" y1="${zeroY}" y2="${zeroY}" stroke="#e46f7a" stroke-width="1" opacity=".6"/>` : ''}
+    <line x1="${pl}" x2="${W - pr}" y1="${safeY}" y2="${safeY}" stroke="#e8b04a" stroke-width="1" stroke-dasharray="4 4" opacity=".8"/>
+    <path d="${area}" fill="url(#g)"/>
+    <path d="${d}" fill="none" stroke="#5cc2ad" stroke-width="2" stroke-linejoin="round"/>
+    ${marks}
+    <circle cx="${X(mi)}" cy="${Y(s[mi].low)}" r="5" fill="none" stroke="#e8eaed" stroke-width="1.5"/>
+    <line id="cur" x1="0" x2="0" y1="${pt}" y2="${H - pb}" stroke="#8b939e" stroke-width="1" opacity="0"/>
+    <rect x="0" y="0" width="${W}" height="${H}" fill="transparent" id="hit"/>
+  </svg>`;
+
+  const showAt = i => {
+    const p = s[i]; const evs = F.byDay[p.date] || [];
+    $('#readout').innerHTML = `<div class="rd">${fmtD(p.date)}${i === mi ? '　期間中の最低' : ''}</div>
+      <div><span class="rb">${yen(i === mi ? p.low : p.bal)}</span>
+      ${evs.length ? `<span class="rd">　${evs.map(e => esc(e.label) + ' ' + (e.amount > 0 ? '+' : '') + yen(e.amount)).join('、')}</span>` : ''}</div>`;
+  };
+  showAt(mi);
+  const svg = $('#svg'), cur = $('#cur');
+  const move = ev => {
+    const r = svg.getBoundingClientRect();
+    const x = (ev.clientX - r.left) / r.width * W;
+    const i = Math.max(0, Math.min(n - 1, Math.round((x - pl) / (W - pl - pr) * (n - 1))));
+    cur.setAttribute('x1', X(i)); cur.setAttribute('x2', X(i)); cur.setAttribute('opacity', '1');
+    showAt(i);
+  };
+  svg.addEventListener('pointerdown', move);
+  svg.addEventListener('pointermove', e => { if (e.buttons || e.pointerType === 'mouse') move(e); });
+  svg.addEventListener('pointerleave', () => { cur.setAttribute('opacity', '0'); showAt(mi); });
+}
+
+/* ---------- カード ---------- */
+function renderCards() {
+  const v = $('#view');
+  const F = forecast();
+  if (!S.cards.length) {
+    v.innerHTML = `<div class="empty"><p>使っているカードを登録する。<br>締め日・引落日・限度額を入れておけば、どの利用がいつ口座から引かれるかを自動で振り分ける。</p>
+      <button class="btn primary" data-act="addCard">カードを追加</button></div>`;
+    return;
+  }
+  v.innerHTML = S.cards.map(card => {
+    const snaps = card.snaps || [];
+    const bills = deriveBills(card);
+    const s = latestSnap(card);
+    let last = '<p class="hint">利用可能額がまだ入力されていない。</p>';
+    if (s) {
+      const st = stateAt(card, s, bills);
+      const prev = snaps.length > 1 ? snaps[snaps.length - 2] : null;
+      const use = prev ? usageBetween(card, prev, s, bills) : null;
+      last = `<div class="kv">
+        <span class="k">最終入力（${fmtD(s.date)}）</span><span class="v">利用可能 ${yen(s.available)}</span>
+        ${st.closed.map(o => `<span class="k">${fmtD(o.c)}締め・${kindLabel(o.kind)} <button class="btn small ghost" data-act="bill" data-id="${card.id}" data-c="${o.c}">直す</button></span><span class="v">${yen(o.amount)}</span>`).join('')}
+        <span class="k">締め後の利用</span><span class="v">${yen(st.unconf)}</span>
+        ${use != null ? `<span class="k">前回（${fmtD(prev.date)}）からの利用</span><span class="v">${use < 0 ? `${yen(use)} <span class="tag">返品・反映ずれ?</span>` : '+' + yen(use)}</span>` : ''}
+      </div>${st.neg ? `<p class="hint" style="color:var(--card)">締め分の金額が利用総額（限度額−利用可能額）を ${yen(-st.neg)} 上回っている。引落し後の枠の戻りがまだか、締め分の金額が実際より大きい可能性がある。</p>` : ''}`;
+    }
+    const pend = s ? pendingConfirms(card, today(), bills) : [];
+    const pendHtml = pend.map(c => `<div class="verdict warn">${fmtD(c)}締めの確定額が出ている頃。
+      <button class="btn small" data-act="bill" data-id="${card.id}" data-c="${c}" style="margin-left:4px">確定額を入力</button></div>`).join('');
+    let pays = '';
+    if (F && F.cardInfo[card.id]) {
+      const ps = F.cardInfo[card.id].pays;
+      pays = ps.length ? `<div class="pays">${ps.map(p => `<div class="pay"><span>${fmtD(p.pay)}${p.final ? '' : '<span class="tag">見込み</span>'}
+        <span class="break">${breakText(p)}</span></span>
+        <span class="num cardc">${yen(p.total)}</span></div>`).join('')}</div>` : '';
+    } else if (!S.bank) pays = '<p class="hint">口座残高を入れると引落予定も表示される。</p>';
+
+    const hist = snaps.slice(-12).reverse().map((x, idx) => {
+      const older = snaps[snaps.length - 2 - idx];
+      const u = older ? usageBetween(card, older, x, bills) : null;
+      return `<li><span>${fmtD(x.date)}<span style="display:block;font-size:11.5px;color:var(--faint)">利用可能 ${yen(x.available)}</span></span>
+        <span class="num">${u != null ? (u >= 0 ? '+' : '') + yen(u) : '—'}</span>
+        <button class="btn small danger" data-act="delSnap" data-id="${card.id}" data-date="${x.date}">削除</button></li>`;
+    }).join('');
+
+    return `<article class="item">
+      <header><h4>${esc(card.name)}</h4><button class="btn small ghost" data-act="editCard" data-id="${card.id}">編集</button></header>
+      <p class="meta">締め ${dayLabel(card.closeDay)}／引落 ${Number(card.payOffset) === 2 ? '翌々月' : '翌月'}${dayLabel(card.payDay)}／限度額 ${yen(card.limit)}${Number(card.dailyEst) ? `／想定 ${yen(card.dailyEst)}/日` : ''}</p>
+      ${pendHtml}${last}${pays}
+      <div class="actions"><button class="btn primary block" data-act="snap" data-id="${card.id}">利用可能額を入力</button></div>
+      ${snaps.length ? `<details><summary>入力の履歴</summary><ul class="hist">${hist}</ul></details>` : ''}
+    </article>`;
+  }).join('') + `<button class="btn block" data-act="addCard">カードを追加</button>`;
+}
+
+/* ---------- 収支 ---------- */
+function freqText(f) {
+  if (f.freq === 'once') return fmtD(f.date) + '（1回のみ）';
+  return `毎月${dayLabel(f.day)}` + (f.freq === 'variable' ? '・金額は変動' : '');
+}
+function renderFlows() {
+  const v = $('#view');
+  const row = f => `<div class="row" data-act="editFlow" data-id="${f.id}">
+      <div><div class="rn">${esc(f.name)}</div><div class="rm">${freqText(f)}</div></div>
+      <div class="ra ${f.kind === 'in' ? 'in' : 'out'}">${f.freq === 'variable' ? '<span class="tag" style="margin:0 6px 0 0">見込み</span>' : ''}${yen(f.amount)}
+        ${f.freq === 'variable' ? `<div><button class="btn small" data-act="override" data-id="${f.id}" style="margin-top:6px">月ごとの実額</button></div>` : ''}</div>
+    </div>`;
+  const ins = S.flows.filter(f => f.kind === 'in'), outs = S.flows.filter(f => f.kind === 'out');
+  const subs = S.subs.map(s => {
+    const c = S.cards.find(c => c.id === s.cardId);
+    return `<div class="row" data-act="editSub" data-id="${s.id}">
+      <div><div class="rn">${esc(s.name)}</div><div class="rm">${s.freq === 'yearly' ? `毎年${s.month}月${dayLabel(s.day)}` : `毎月${dayLabel(s.day)}`}・${c ? esc(c.name) : 'カード未設定'}払い</div></div>
+      <div class="ra cardc">${yen(s.amount)}</div></div>`;
+  }).join('');
+  const subTotal = S.subs.reduce((a, s) => a + (s.freq === 'yearly' ? s.amount / 12 : Number(s.amount)), 0);
+  v.innerHTML = `
+    <div class="sec-head"><h3>収入</h3><button class="btn small" data-act="addFlow" data-kind="in">追加</button></div>
+    ${ins.map(row).join('') || '<p class="hint">仕送り・バイト代などを登録する。毎月同じ額なら「毎月固定」、額が変わるなら「毎月変動」。</p>'}
+    <div class="sec-head"><h3>口座からの支出</h3><button class="btn small" data-act="addFlow" data-kind="out">追加</button></div>
+    ${outs.map(row).join('') || '<p class="hint">家賃など、カードを通さず口座から直接出ていくものだけを登録する。カード払いのものはここに入れない。</p>'}
+    <div class="sec-head"><h3>サブスク（カード払い）</h3><button class="btn small" data-act="addSub">追加</button></div>
+    ${subs || '<p class="hint">カード払いのサブスク。口座からは別に引かず、カードの引落額の内訳として扱う。</p>'}
+    ${S.subs.length ? `<p class="hint">月あたり合計 <span class="num">${yen(subTotal)}</span>（年払いは12で割って換算）</p>` : ''}`;
+}
+
+/* ---------- 設定 ---------- */
+function renderSettings() {
+  $('#view').innerHTML = `
+    <div class="f"><label for="safe">安全ライン（これを下回る日を警告する）</label><input id="safe" inputmode="numeric" value="${S.safeLine}"></div>
+    <div class="sheet-actions"><button class="btn primary" data-act="saveSafe">保存</button></div>
+    <h3>データ</h3>
+    <p class="hint">データはこの端末のブラウザの中にだけ保存されている。Safariの履歴やデータを消すと一緒に消えるので、ときどき書き出しておく。</p>
+    <div class="sheet-actions"><button class="btn" data-act="export">書き出す</button><button class="btn" data-act="import">読み込む</button></div>
+    <h3>計算のきまり</h3>
+    <p class="hint">・カードの引落日が土日なら翌月曜として計算する。祝日はずらさない。<br>
+    ・同じ日に入金と出金がある場合、先に出金を引いた残高で警告を判定する。<br>
+    ・カードは「限度額−利用可能額」を未引落の利用総額とみなす。締め日をまたいだ入力では、前回入力とのあいだの利用を日数で按分して締め分を自動推定する。締め日当日に入力すれば推定は不要になる。<br>
+    ・確定額を入れた締めは、その額を優先する。<br>
+    ・最後の入力より後の利用は「想定利用額/日」とサブスクで見積もる。<br>
+    ・収入・口座からの支出は、土日でも登録した日付のまま計算する。</p>
+    <div class="sheet-actions" style="margin-top:32px"><button class="btn danger" data-act="reset">すべてのデータを削除</button></div>`;
+}
+
+/* ================= シート ================= */
+function openSheet(title, html, mount) {
+  $('#sheetTitle').textContent = title; $('#sheetBody').innerHTML = html;
+  document.body.classList.add('sheet-open'); $('#sheet').scrollTop = 0;
+  if (mount) mount($('#sheetBody'));
+}
+function closeSheet() { document.body.classList.remove('sheet-open'); }
+$('#sheetClose').onclick = closeSheet; $('#sheetBg').onclick = closeSheet;
+const dayOpts = sel => Array.from({ length: 31 }, (_, i) => i + 1).map(d => `<option value="${d}" ${Number(sel) === d ? 'selected' : ''}>${d === 31 ? '末日' : d + '日'}</option>`).join('');
+const val = id => document.getElementById(id).value;
+
+function bankSheet() {
+  openSheet('口座残高', `
+    <div class="two">
+      <div class="f"><label for="bd">日付</label><input id="bd" type="date" value="${today()}"></div>
+      <div class="f"><label for="ba">残高</label><input id="ba" inputmode="numeric" value="${S.bank ? S.bank.amount : ''}" placeholder="例 132400"></div>
+    </div>
+    <p class="hint">その日の引落し・入金が反映された後の残高を入れる。</p>
+    <div class="sheet-actions"><button class="btn primary" id="ok">保存</button></div>`, () => {
+    $('#ok').onclick = () => {
+      const a = num(val('ba')); if (!val('bd') || isNaN(a)) return alert('日付と残高を入れる');
+      S.bank = { date: val('bd'), amount: a }; save(); closeSheet(); render();
+    };
+  });
+}
+
+function cardSheet(card) {
+  const c = card || { name: '', limit: '', closeDay: 15, payDay: 10, payOffset: 1, dailyEst: 0, confirmAfter: 15 };
+  openSheet(card ? 'カードを編集' : 'カードを追加', `
+    <div class="f"><label for="cn">名前</label><input id="cn" value="${esc(c.name)}" placeholder="例 楽天"></div>
+    <div class="f"><label for="cl">限度額（ショッピング枠）</label><input id="cl" inputmode="numeric" value="${c.limit}"></div>
+    <div class="two">
+      <div class="f"><label for="cc">締め日</label><select id="cc">${dayOpts(c.closeDay)}</select></div>
+      <div class="f"><label for="cp">引落日</label><select id="cp">${dayOpts(c.payDay)}</select></div>
+    </div>
+    <div class="f"><span class="flabel">引落しは締め日の</span>
+      <div class="seg"><label><input type="radio" name="po" value="1" ${Number(c.payOffset) !== 2 ? 'checked' : ''}>翌月</label><label><input type="radio" name="po" value="2" ${Number(c.payOffset) === 2 ? 'checked' : ''}>翌々月</label></div></div>
+    <div class="f"><label for="ce">1日あたりの想定利用額（任意）</label><input id="ce" inputmode="numeric" value="${c.dailyEst || ''}" placeholder="0"></div>
+    <p class="hint">最後に入力した日より後の利用を見積もるのに使う。0にすると、入力済みの額とサブスクだけで計算する。</p>
+    <div class="f"><label for="ca">確定額を聞き始めるのは締め日の何日後か</label><input id="ca" inputmode="numeric" value="${c.confirmAfter ?? 15}"></div>
+    <p class="hint">引落日の前日より遅くはならない。</p>
+    <div class="sheet-actions">${card ? '<button class="btn danger" id="del">削除</button>' : ''}<button class="btn primary" id="ok">保存</button></div>`, () => {
+    $('#ok').onclick = () => {
+      const name = val('cn').trim(), limit = num(val('cl'));
+      if (!name || isNaN(limit)) return alert('名前と限度額を入れる');
+      const data = { name, limit, closeDay: Number(val('cc')), payDay: Number(val('cp')),
+        payOffset: Number(document.querySelector('input[name=po]:checked').value), dailyEst: num(val('ce')) || 0,
+        confirmAfter: isNaN(num(val('ca'))) ? 15 : num(val('ca')) };
+      if (card) Object.assign(card, data); else S.cards.push({ id: uid(), snaps: [], bills: {}, ...data });
+      save(); closeSheet(); render();
+    };
+    if (card) $('#del').onclick = () => {
+      const n = S.subs.filter(s => s.cardId === card.id).length;
+      if (!confirm(`${card.name} を削除する。入力履歴${n ? `と、このカードで払っているサブスク${n}件` : ''}も消える。`)) return;
+      S.cards = S.cards.filter(x => x !== card); S.subs = S.subs.filter(s => s.cardId !== card.id);
+      save(); closeSheet(); render();
+    };
+  });
+}
+
+function snapSheet(card) {
+  openSheet(`${card.name}の利用可能額`, `
+    <div class="two">
+      <div class="f"><label for="sd">確認した日</label><input id="sd" type="date" value="${today()}"></div>
+      <div class="f"><label for="sv">利用可能額</label><input id="sv" inputmode="numeric" placeholder="例 268400"></div>
+    </div>
+    <div id="extra"></div>
+    <div class="preview" id="pv"></div>
+    <div class="sheet-actions"><button class="btn primary" id="ok">保存</button></div>`, body => {
+    const prevOf = D => { const xs = (card.snaps || []).filter(x => x.date < D); return xs.length ? xs[xs.length - 1] : null; };
+    const tempSnap = () => { const v = num(val('sv')); return (val('sv').trim() === '' || isNaN(v)) ? null : { date: val('sd'), available: v }; };
+    const drawExtra = () => {
+      const D = val('sd'); if (!D) return;
+      const prev = prevOf(D); const own = card.bills || {};
+      const open = unpaidClosings(card, D).filter(c => !own[c]);
+      // 確定額の時期に入っている締め → 確定額（任意）。まだなら、締め日をまたいだ分だけ推定額（任意）
+      const conf = pendingConfirms(card, D, own);
+      const est = open.filter(c => !conf.includes(c) && (!prev || prev.date < c));
+      let h = '';
+      if (est.length) h += `<div class="conf-box">${est.map(c => `<div class="f" style="margin-top:6px">
+          <label>${fmtD(c)}締め時点の利用額（推定・任意）</label>
+          <input class="ex" data-c="${c}" data-kind="estimate" inputmode="numeric">
+          <p class="hint">${prev ? `前回入力（${fmtD(prev.date)}）とのあいだを日数で按分した値を入れてある。分かれば書き換える。` : '初回のみ。分からなければ空欄のまま保存できる。'}</p></div>`).join('')}</div>`;
+      if (conf.length) h += `<div class="conf-box">${conf.map(c => `<div class="f" style="margin-top:6px">
+          <label>${fmtD(c)}締めの確定額（${fmtD(paymentFor(card, c))}引落・任意）</label>
+          <input class="ex" data-c="${c}" data-kind="confirmed" inputmode="numeric">
+          <p class="hint">一度入れたら、この締めの分はもう聞かない。</p></div>`).join('')}</div>`;
+      $('#extra').innerHTML = h;
+      body.querySelectorAll('.ex').forEach(i => i.oninput = () => { i.dataset.touched = '1'; preview(); });
+      update();
+    };
+    const update = () => { // 推定欄に自動推定値を入れる（触っていない欄だけ）
+      const t = tempSnap(); const bills = deriveBills(card, t);
+      body.querySelectorAll('.ex').forEach(i => {
+        const b = bills[i.dataset.c];
+        if (i.dataset.kind === 'estimate' && !i.dataset.touched) i.value = (b && b.kind === 'auto' && card.snaps && card.snaps.length) ? b.amount : '';
+        if (i.dataset.kind === 'confirmed') i.placeholder = b ? `今の推定 ${b.amount}` : '';
+      });
+      preview();
+    };
+    const collect = () => {
+      const out = {};
+      body.querySelectorAll('.ex').forEach(i => {
+        if (!i.dataset.touched || i.value.trim() === '') return;
+        const a = num(i.value); if (!isNaN(a)) out[i.dataset.c] = { amount: a, kind: i.dataset.kind };
+      });
+      return out;
+    };
+    const preview = () => {
+      const pv = $('#pv'); const t = tempSnap();
+      if (!t) { pv.className = 'preview'; pv.textContent = '利用可能額だけで保存できる。'; return; }
+      const fake = { ...card, bills: { ...(card.bills || {}), ...collect() } };
+      const bills = deriveBills(fake, t); const st = stateAt(fake, t, bills); const prev = prevOf(t.date);
+      let txt = `利用総額 ${yen(st.U)}` + (st.closed.length ? `（締め分 ${yen(st.closed.reduce((x, o) => x + o.amount, 0))}／締め後 ${yen(st.unconf)}）` : '') + '。';
+      if (prev) { const u = usageBetween(fake, prev, t, bills); txt += `前回（${fmtD(prev.date)}）から ${u >= 0 ? '+' : ''}${yen(u)}。`; }
+      pv.className = st.neg ? 'preview bad' : 'preview';
+      pv.textContent = st.neg ? txt + ' 締め分が利用総額を上回っている。枠の戻りがまだか、締め分の金額が大きすぎる可能性がある。' : txt;
+    };
+    $('#sd').onchange = drawExtra; $('#sv').oninput = update;
+    drawExtra();
+    $('#ok').onclick = () => {
+      const t = tempSnap(); if (!t || !t.date) return alert('利用可能額を入れる');
+      card.bills = { ...(card.bills || {}), ...collect() };
+      card.snaps = (card.snaps || []).filter(x => x.date !== t.date); card.snaps.push(t);
+      card.snaps.sort((a, b) => a.date < b.date ? -1 : 1);
+      save(); closeSheet(); render();
+    };
+  });
+}
+
+function billSheet(card, c) {
+  const bills = deriveBills(card); const cur = bills[c];
+  const confDefault = today() >= askFrom(card, c) || (cur && cur.kind === 'confirmed');
+  openSheet(`${fmtD(c)}締めの金額`, `
+    <p class="hint">${fmtD(paymentFor(card, c))}に引き落とされる分。今は ${cur ? `${kindLabel(cur.kind)} ${yen(cur.amount)}` : '未設定'}。</p>
+    <div class="f"><span class="flabel">種類</span><div class="seg">
+      <label><input type="radio" name="bk" value="confirmed" ${confDefault ? 'checked' : ''}>確定額</label>
+      <label><input type="radio" name="bk" value="estimate" ${confDefault ? '' : 'checked'}>自分の推定</label></div></div>
+    <div class="f"><label for="bv">金額</label><input id="bv" inputmode="numeric" value="${cur && cur.kind !== 'auto' ? cur.amount : ''}" placeholder="${cur ? cur.amount : ''}"></div>
+    <div class="sheet-actions">${card.bills && card.bills[c] ? '<button class="btn" id="auto">自動推定に戻す</button>' : ''}<button class="btn primary" id="ok">保存</button></div>`, () => {
+    $('#ok').onclick = () => {
+      const a = num(val('bv')); if (val('bv').trim() === '' || isNaN(a)) return alert('金額を入れる');
+      card.bills = card.bills || {}; card.bills[c] = { amount: a, kind: document.querySelector('input[name=bk]:checked').value };
+      save(); closeSheet(); render();
+    };
+    if ($('#auto')) $('#auto').onclick = () => { delete card.bills[c]; save(); closeSheet(); render(); };
+  });
+}
+
+function flowSheet(flow, kind) {
+  const f = flow || { name: '', kind: kind || 'in', freq: 'fixed', day: 25, amount: '', date: today() };
+  openSheet(flow ? '編集' : (f.kind === 'in' ? '収入を追加' : '支出を追加'), `
+    <div class="f"><label for="fn">名前</label><input id="fn" value="${esc(f.name)}" placeholder="${f.kind === 'in' ? '例 仕送りA' : '例 家賃'}"></div>
+    <div class="f"><span class="flabel">種類</span><div class="seg">
+      <label><input type="radio" name="fk" value="in" ${f.kind === 'in' ? 'checked' : ''}>収入</label>
+      <label><input type="radio" name="fk" value="out" ${f.kind === 'out' ? 'checked' : ''}>口座からの支出</label></div></div>
+    <div class="f"><span class="flabel">頻度</span><div class="seg">
+      <label><input type="radio" name="ff" value="fixed" ${f.freq === 'fixed' ? 'checked' : ''}>毎月固定</label>
+      <label><input type="radio" name="ff" value="variable" ${f.freq === 'variable' ? 'checked' : ''}>毎月変動</label>
+      <label><input type="radio" name="ff" value="once" ${f.freq === 'once' ? 'checked' : ''}>1回のみ</label></div></div>
+    <div class="two">
+      <div class="f" id="dayF"><label for="fd">日</label><select id="fd">${dayOpts(f.day)}</select></div>
+      <div class="f" id="dateF"><label for="fdt">日付</label><input id="fdt" type="date" value="${f.date || today()}"></div>
+      <div class="f"><label for="fa" id="fal">金額</label><input id="fa" inputmode="numeric" value="${f.amount}"></div>
+    </div>
+    <p class="hint" id="fh"></p>
+    <div class="sheet-actions">${flow ? '<button class="btn danger" id="del">削除</button>' : ''}<button class="btn primary" id="ok">保存</button></div>`, () => {
+    const sync = () => {
+      const fr = document.querySelector('input[name=ff]:checked').value;
+      $('#dayF').style.display = fr === 'once' ? 'none' : ''; $('#dateF').style.display = fr === 'once' ? '' : 'none';
+      $('#fal').textContent = fr === 'variable' ? '見込み額' : '金額';
+      $('#fh').textContent = fr === 'variable' ? '実際の額が分かった月は、一覧の「月ごとの実額」から上書きする。上書きしていない月は見込み額で計算する。' : '';
+    };
+    document.querySelectorAll('input[name=ff]').forEach(i => i.onchange = sync); sync();
+    $('#ok').onclick = () => {
+      const fr = document.querySelector('input[name=ff]:checked').value;
+      const name = val('fn').trim(), amount = num(val('fa'));
+      if (!name || isNaN(amount)) return alert('名前と金額を入れる');
+      const data = { name, amount, kind: document.querySelector('input[name=fk]:checked').value, freq: fr,
+        day: Number(val('fd')), date: fr === 'once' ? val('fdt') : null };
+      if (flow) Object.assign(flow, data); else S.flows.push({ id: uid(), overrides: {}, ...data });
+      save(); closeSheet(); render();
+    };
+    if (flow) $('#del').onclick = () => { if (confirm(`${flow.name} を削除する`)) { S.flows = S.flows.filter(x => x !== flow); save(); closeSheet(); render(); } };
+  });
+}
+
+function overrideSheet(flow) {
+  const base = parse(S.bank ? S.bank.date : today());
+  const months = Array.from({ length: 7 }, (_, i) => ymOf(isoOf(new Date(base.getFullYear(), base.getMonth() + i, 1))));
+  flow.overrides = flow.overrides || {};
+  openSheet(`${flow.name}の実額`, `
+    <p class="hint">空欄の月は見込み額 ${yen(flow.amount)} で計算する。</p>
+    ${months.map(k => `<div class="f"><label>${fmtYM(k)}（${dayLabel(flow.day)}）</label><input class="ov" data-k="${k}" inputmode="numeric" value="${flow.overrides[k] ?? ''}" placeholder="${flow.amount}"></div>`).join('')}
+    <div class="sheet-actions"><button class="btn primary" id="ok">保存</button></div>`, body => {
+    $('#ok').onclick = () => {
+      body.querySelectorAll('.ov').forEach(i => {
+        const a = num(i.value);
+        if (i.value.trim() === '' || isNaN(a)) delete flow.overrides[i.dataset.k]; else flow.overrides[i.dataset.k] = a;
+      });
+      save(); closeSheet(); render();
+    };
+  });
+}
+
+function subSheet(sub) {
+  if (!S.cards.length) return alert('先にカードタブでカードを登録する');
+  const s = sub || { name: '', amount: '', cardId: S.cards[0].id, freq: 'monthly', day: 1, month: 1 };
+  openSheet(sub ? 'サブスクを編集' : 'サブスクを追加', `
+    <div class="f"><label for="sn">名前</label><input id="sn" value="${esc(s.name)}" placeholder="例 Apple Music"></div>
+    <div class="two">
+      <div class="f"><label for="sa">金額</label><input id="sa" inputmode="numeric" value="${s.amount}"></div>
+      <div class="f"><label for="sc">支払うカード</label><select id="sc">${S.cards.map(c => `<option value="${c.id}" ${c.id === s.cardId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
+    </div>
+    <div class="f"><span class="flabel">頻度</span><div class="seg">
+      <label><input type="radio" name="sf" value="monthly" ${s.freq !== 'yearly' ? 'checked' : ''}>毎月</label>
+      <label><input type="radio" name="sf" value="yearly" ${s.freq === 'yearly' ? 'checked' : ''}>毎年</label></div></div>
+    <div class="two">
+      <div class="f" id="smF"><label for="smo">月</label><select id="smo">${Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}" ${Number(s.month) === i + 1 ? 'selected' : ''}>${i + 1}月</option>`).join('')}</select></div>
+      <div class="f"><label for="sdy">課金日</label><select id="sdy">${dayOpts(s.day)}</select></div>
+    </div>
+    <div class="sheet-actions">${sub ? '<button class="btn danger" id="del">削除</button>' : ''}<button class="btn primary" id="ok">保存</button></div>`, () => {
+    const sync = () => { $('#smF').style.display = document.querySelector('input[name=sf]:checked').value === 'yearly' ? '' : 'none'; };
+    document.querySelectorAll('input[name=sf]').forEach(i => i.onchange = sync); sync();
+    $('#ok').onclick = () => {
+      const name = val('sn').trim(), amount = num(val('sa'));
+      if (!name || isNaN(amount)) return alert('名前と金額を入れる');
+      const data = { name, amount, cardId: val('sc'), freq: document.querySelector('input[name=sf]:checked').value, day: Number(val('sdy')), month: Number(val('smo')) };
+      if (sub) Object.assign(sub, data); else S.subs.push({ id: uid(), ...data });
+      save(); closeSheet(); render();
+    };
+    if (sub) $('#del').onclick = () => { if (confirm(`${sub.name} を削除する`)) { S.subs = S.subs.filter(x => x !== sub); save(); closeSheet(); render(); } };
+  });
+}
+
+function exportSheet() {
+  const json = JSON.stringify(S, null, 1);
+  openSheet('書き出す', `
+    <div class="f"><textarea id="ex" readonly>${esc(json)}</textarea></div>
+    <div class="sheet-actions"><button class="btn" id="cp">コピー</button><button class="btn primary" id="dl">ファイルで保存</button></div>`, () => {
+    $('#cp').onclick = async () => { try { await navigator.clipboard.writeText(json); $('#cp').textContent = 'コピーした'; } catch (e) { $('#ex').select(); } };
+    $('#dl').onclick = () => {
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+      a.download = `cashflow-${today()}.json`; document.body.appendChild(a); a.click(); a.remove();
+    };
+  });
+}
+function importSheet() {
+  openSheet('読み込む', `
+    <p class="hint">書き出したデータを貼り付ける。今のデータは置き換わる。</p>
+    <div class="f"><textarea id="im" placeholder="{ ... }"></textarea></div>
+    <div class="sheet-actions"><button class="btn primary" id="ok">読み込む</button></div>`, () => {
+    $('#ok').onclick = () => {
+      try {
+        const d = JSON.parse(val('im'));
+        if (!Array.isArray(d.cards) || !Array.isArray(d.flows) || !Array.isArray(d.subs)) throw 0;
+        S = migrate(Object.assign(defaultState(), d)); save(); closeSheet(); tab = 'home'; render();
+      } catch (e) { alert('形式が違う。書き出した内容をそのまま貼り付ける。'); }
+    };
+  });
+}
+
+/* ================= 操作 ================= */
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-tab],[data-act],[data-range]'); if (!t) return;
+  if (t.dataset.tab) { tab = t.dataset.tab; render(); return; }
+  if (t.dataset.range) { S.horizon = Number(t.dataset.range); save(); render(); return; }
+  const id = t.dataset.id;
+  switch (t.dataset.act) {
+    case 'bank': bankSheet(); break;
+    case 'addCard': cardSheet(null); break;
+    case 'editCard': cardSheet(S.cards.find(c => c.id === id)); break;
+    case 'snap': snapSheet(S.cards.find(c => c.id === id)); break;
+    case 'bill': billSheet(S.cards.find(c => c.id === id), t.dataset.c); break;
+    case 'delSnap': {
+      e.stopPropagation();
+      const c = S.cards.find(c => c.id === id);
+      if (confirm(`${fmtD(t.dataset.date)}の入力を削除する`)) { c.snaps = c.snaps.filter(s => s.date !== t.dataset.date); save(); render(); }
+      break;
+    }
+    case 'addFlow': flowSheet(null, t.dataset.kind); break;
+    case 'editFlow': flowSheet(S.flows.find(f => f.id === id)); break;
+    case 'override': e.stopPropagation(); overrideSheet(S.flows.find(f => f.id === id)); break;
+    case 'addSub': subSheet(null); break;
+    case 'editSub': subSheet(S.subs.find(s => s.id === id)); break;
+    case 'saveSafe': { const a = num(val('safe')); if (isNaN(a)) return alert('数字を入れる'); S.safeLine = a; save(); alert('保存した'); break; }
+    case 'export': exportSheet(); break;
+    case 'import': importSheet(); break;
+    case 'reset': if (confirm('すべてのデータを削除する。元に戻せない。')) { S = defaultState(); save(); tab = 'home'; render(); } break;
+  }
+});
+
+render();
+</script>
+</body>
+</html>
