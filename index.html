@@ -356,20 +356,19 @@ function remapBills(oldCard, newCard) {
 
 /* 入力の記録から、カードの累積利用額を日付でたどれるようにする。
    2回の入力のあいだの利用は、日付の分かっている分（サブスク・出費予定）をその日に置き、
-   残りを「そのカードを使う日」（ローテーション）に均等に置く。使う日がなければ全日に均等。 */
+   残りを「そのカードを使う日」（ローテーション）に、その月の予算のペースで配る。使う日がなければ全日に均等。
+   最初の入力の「締め後の利用」は、直前の締め日の翌日から入力日までの利用として同じように配る
+   （記録を始める前の利用。ただし、その時点で締まっている分の金額が分からないカードでは配らない）。 */
 function cardTimeline(S, card, bills, act) {
   const sn = card.snaps || [];
   if (!sn.length) return null;
   const cum = {}; let total = 0;
-  for (let i = 1; i < sn.length; i++) {
-    const a = sn[i - 1], b = sn[i];
-    const usage = usageBetween(card, a, b, bills);
+  const spread = (from, to, usage) => {
     const pts = {}; let known = 0;
-    for (const s of S.subs) if (s.cardId === card.id) for (const ch of subCharges(s, a.date, b.date)) { pts[ch.date] = (pts[ch.date] || 0) + ch.amount; known += ch.amount; }
-    for (const p of S.planned) if (payTarget(S, p) === card.id && p.date > a.date && p.date <= b.date) { pts[p.date] = (pts[p.date] || 0) + Number(p.amount); known += Number(p.amount); }
-    // 重み＝その日にこのカードを使う割合 ×（その月の予算 ÷ 日数）。月で予算が違っても、使うペースに合わせて配る
+    for (const s of S.subs) if (s.cardId === card.id) for (const ch of subCharges(s, from, to)) { pts[ch.date] = (pts[ch.date] || 0) + ch.amount; known += ch.amount; }
+    for (const p of S.planned) if (payTarget(S, p) === card.id && p.date > from && p.date <= to) { pts[p.date] = (pts[p.date] || 0) + Number(p.amount); known += Number(p.amount); }
     const days = []; let wsum = 0, ssum = 0;
-    for (let d = addDays(a.date, 1); d <= b.date; d = addDays(d, 1)) {
+    for (let d = addDays(from, 1); d <= to; d = addDays(d, 1)) {
       const ac = act(d); const share = ac.some(c => c.id === card.id) ? 1 / ac.length : 0;
       const B = budgetFor(S, ymOf(d)); const pace = B != null && B > 0 ? B / dim(parse(d).getFullYear(), parse(d).getMonth()) : 0;
       days.push([d, share * pace, share]); wsum += share * pace; ssum += share;
@@ -379,9 +378,16 @@ function cardTimeline(S, card, bills, act) {
       run += (pts[d] || 0) + rest * (wsum > 0 ? w / wsum : ssum > 0 ? share / ssum : 1 / days.length);
       cum[d] = run;
     }
-    total += usage; cum[b.date] = total;   // 端数のずれを入力日でそろえる
+    total += usage; cum[to] = total;   // 端数のずれを入力日でそろえる
+  };
+  let first = sn[0].date, pre = 0;
+  const st0 = stateAt(card, sn[0], bills);
+  if (!st0.neg && st0.closed.every(o => o.kind === 'confirmed' || o.kind === 'estimate')) {
+    first = lastClosingBefore(card, sn[0].date); pre = st0.unconf;
+    spread(first, sn[0].date, pre);
   }
-  return { first: sn[0].date, last: sn[sn.length - 1].date, cum, total };
+  for (let i = 1; i < sn.length; i++) spread(sn[i - 1].date, sn[i].date, usageBetween(card, sn[i - 1], sn[i], bills));
+  return { first, firstSnap: sn[0].date, last: sn[sn.length - 1].date, cum, total, pre, preSkipped: first === sn[0].date };
 }
 function cumAt(tl, d) {
   if (d <= tl.first) return 0;
@@ -896,16 +902,21 @@ function renderCards(C) {
     const hist = snaps.slice(-12).reverse().map((x, idx) => {
       const older = snaps[snaps.length - 2 - idx];
       const u = older ? usageBetween(card, older, x, bills) : null;
-      return `<li><span>${fmtD(x.date)}<span style="display:block;font-size:11.5px;color:var(--faint)">利用可能 ${yen(x.available)}</span></span>
+      return `<li><span>${fmtD(x.date)}<span style="display:block;font-size:11.5px;color:var(--faint)">利用可能 ${yen(x.available)}・限度額 ${yen(x.limit ?? card.limit)}</span></span>
         <span class="num">${u != null ? syen(u) : '—'}</span>
-        <button class="btn small danger" data-act="delSnap" data-id="${card.id}" data-date="${x.date}">削除</button></li>`;
+        <button class="btn small" data-act="editSnap" data-id="${card.id}" data-date="${x.date}">直す</button></li>`;
     }).join('');
     const rot = card.daily !== false ? rotationText(C, card) : '日常の支払いには使わない設定';
+    let preHint = '';
+    if (info.tl && info.tl.preSkipped) {
+      const unk = stateAt(card, snaps[0], bills).closed.filter(o => o.kind === 'none');
+      if (unk.length) preHint = `<p class="hint">${unk.map(o => fmtD(o.c) + '締め').join('・')}の金額（確定額か推定）を入れると、記録を始める前（${fmtD(snaps[0].date)}まで）の利用も予算に数えられる。<button class="btn small" data-act="bill" data-id="${card.id}" data-c="${unk[0].c}">入れる</button></p>`;
+    }
     return `<article class="item" data-card="${card.id}">
       <header><h4>${esc(card.name)}</h4><button class="btn small ghost" data-act="editCard" data-id="${card.id}">編集</button></header>
       <p class="meta">締め ${dayLabel(card.closeDay)}／引落 ${Number(card.payOffset) === 2 ? '翌々月' : '翌月'}${dayLabel(card.payDay)}／限度額 ${yen(card.limit)}</p>
       ${rot ? `<p class="meta">${rot}</p>` : ''}
-      ${pendHtml}${last}${pays}
+      ${pendHtml}${last}${preHint}${pays}
       <div class="actions"><button class="btn primary block" data-act="snap" data-id="${card.id}">利用可能額を入力</button></div>
       ${snaps.length ? `<details><summary>入力の履歴</summary><ul class="hist">${hist}</ul></details>` : ''}
     </article>`;
@@ -1056,6 +1067,7 @@ function cardSheet(card) {
   openSheet(card ? 'カードを編集' : 'カードを追加', `
     <div class="f"><label for="cn">名前</label><input id="cn" value="${esc(c.name)}" placeholder="例 メインカード"></div>
     <div class="f"><label for="cl">限度額（ショッピング枠）</label><input id="cl" inputmode="numeric" value="${c.limit}" placeholder="例 300000"></div>
+    ${card ? '<p class="hint">ここを変えると、これから入れる利用可能額に使う。過去の入力の限度額は「入力の履歴」の「直す」から変える。</p>' : ''}
     <div class="two">
       <div class="f"><label for="cc">締め日</label><select id="cc">${dayOpts(c.closeDay)}</select></div>
       <div class="f"><label for="cp">引落日</label><select id="cp">${dayOpts(c.payDay)}</select></div>
@@ -1095,17 +1107,25 @@ function cardSheet(card) {
   });
 }
 
-function snapSheet(card) {
-  openSheet(`${card.name}の利用可能額`, `
+function snapSheet(card, edit) {
+  // edit があれば、その入力を直す
+  const others = (card.snaps || []).filter(x => !edit || x.date !== edit.date);
+  const base = { ...card, snaps: others };
+  openSheet(edit ? `${card.name}の入力を直す` : `${card.name}の利用可能額`, `
     <div class="two">
-      <div class="f"><label for="sd">確認した日</label><input id="sd" type="date" value="${today()}" max="${today()}"></div>
-      <div class="f"><label for="sv">利用可能額</label><input id="sv" inputmode="numeric" placeholder="例 250000"></div>
+      <div class="f"><label for="sd">確認した日</label><input id="sd" type="date" value="${edit ? edit.date : today()}" max="${today()}"></div>
+      <div class="f"><label for="sv">利用可能額</label><input id="sv" inputmode="numeric" placeholder="例 250000" value="${edit ? edit.available : ''}"></div>
     </div>
+    <div class="f"><label for="sl">その時点の限度額</label><input id="sl" inputmode="numeric" value="${edit && edit.limit != null ? edit.limit : card.limit}"></div>
+    <p class="hint">増枠などで限度額が変わったときは書き換える。いちばん新しい入力なら、カードの限度額の設定も一緒に変わる。</p>
     <div id="extra"></div>
     <div class="preview" id="pv"></div>
-    <div class="sheet-actions"><button class="btn primary" id="ok">保存</button></div>`, body => {
-    const prevOf = D => { const xs = (card.snaps || []).filter(x => x.date < D); return xs.length ? xs[xs.length - 1] : null; };
-    const tempSnap = () => { const v = num(val('sv')); return isNaN(v) || !isISO(val('sd')) ? null : { date: val('sd'), available: v, limit: Number(card.limit) }; };
+    <div class="sheet-actions">${edit ? '<button class="btn danger" id="del">この入力を削除</button>' : ''}<button class="btn primary" id="ok">保存</button></div>`, body => {
+    const prevOf = D => { const xs = others.filter(x => x.date < D); return xs.length ? xs[xs.length - 1] : null; };
+    const tempSnap = () => {
+      const v = num(val('sv')), l = num(val('sl'));
+      return isNaN(v) || isNaN(l) || l <= 0 || !isISO(val('sd')) ? null : { date: val('sd'), available: v, limit: l };
+    };
     const drawExtra = () => {
       const D = val('sd'); if (!isISO(D)) return;
       const prev = prevOf(D); const own = card.bills || {};
@@ -1116,7 +1136,7 @@ function snapSheet(card) {
       if (est.length) h += `<div class="conf-box">${est.map(c => `<div class="f" style="margin-top:6px">
           <label>${fmtD(c)}締め時点の利用額（推定・任意）</label>
           <input class="ex" data-c="${c}" data-kind="estimate" inputmode="numeric">
-          <p class="hint">${prev ? `前回入力（${fmtD(prev.date)}）とのあいだを日数で按分した値を入れてある。分かれば書き換える。` : '初回のみ。分からなければ空欄のまま保存できる。'}</p></div>`).join('')}</div>`;
+          <p class="hint">${prev ? `前回入力（${fmtD(prev.date)}）とのあいだを日数で按分した値を入れてある。分かれば書き換える。` : '初回のみ。分かれば入れると、記録を始める前の利用も予算に数えられる。空欄でも保存できる。'}</p></div>`).join('')}</div>`;
       if (conf.length) h += `<div class="conf-box">${conf.map(c => `<div class="f" style="margin-top:6px">
           <label>${fmtD(c)}締めの確定額（${fmtD(paymentFor(card, c))}引落・任意）</label>
           <input class="ex" data-c="${c}" data-kind="confirmed" inputmode="numeric">
@@ -1126,10 +1146,10 @@ function snapSheet(card) {
       update();
     };
     const update = () => {
-      const t = tempSnap(); const bills = deriveBills(card, t);
+      const t = tempSnap(); const bills = deriveBills(base, t);
       body.querySelectorAll('.ex').forEach(i => {
         const b = bills[i.dataset.c];
-        if (i.dataset.kind === 'estimate' && !i.dataset.touched) i.value = (b && b.kind === 'auto' && card.snaps && card.snaps.length) ? b.amount : '';
+        if (i.dataset.kind === 'estimate' && !i.dataset.touched) i.value = (b && b.kind === 'auto' && others.length) ? b.amount : '';
         if (i.dataset.kind === 'confirmed') i.placeholder = b ? `今の推定 ${b.amount}` : '';
       });
       preview();
@@ -1145,24 +1165,33 @@ function snapSheet(card) {
     const preview = () => {
       const pv = $('#pv'); const t = tempSnap();
       if (!t) { pv.className = 'preview'; pv.textContent = '利用可能額だけで保存できる。'; return; }
-      const fake = { ...card, bills: { ...(card.bills || {}), ...collect() } };
+      const fake = { ...base, bills: { ...(card.bills || {}), ...collect() } };
       const bills = deriveBills(fake, t); const st = stateAt(fake, t, bills); const prev = prevOf(t.date);
       let txt = `利用総額 ${yen(st.U)}` + (st.closed.length ? `（締め分 ${yen(st.closed.reduce((x, o) => x + o.amount, 0))}／締め後 ${yen(st.unconf)}）` : '') + '。';
-      if (prev) txt += `前回（${fmtD(prev.date)}）から ${syen(usageBetween(fake, prev, t, bills))}。`;
-      if (t.available > card.limit) txt += ' 利用可能額が限度額より大きい。限度額の設定を確認する。';
-      pv.className = st.neg || t.available > card.limit ? 'preview bad' : 'preview';
-      pv.textContent = st.neg ? txt + ' 締め分が利用総額を上回っている。枠の戻りがまだか、締め分の金額が大きすぎる可能性がある。' : txt;
+      let bad = false;
+      if (prev) {
+        const u = usageBetween(fake, prev, t, bills);
+        txt += `前回（${fmtD(prev.date)}）から ${syen(u)}。`;
+        if (u <= -5000) { bad = true; txt += ` 引落し分を除いても利用可能額が ${yen(-u)} 増えている。増枠なら限度額を書き換える。返品・キャンセルならこのままでよい。`; }
+      }
+      if (t.available > t.limit) { bad = true; txt += ' 利用可能額が限度額より大きい。限度額を確認する。'; }
+      if (st.neg) { bad = true; txt += ' 締め分が利用総額を上回っている。枠の戻りがまだか、締め分の金額が大きすぎる可能性がある。'; }
+      pv.className = bad ? 'preview bad' : 'preview';
+      pv.textContent = txt;
     };
-    $('#sd').onchange = drawExtra; $('#sv').oninput = update;
+    $('#sd').onchange = drawExtra; $('#sv').oninput = update; $('#sl').oninput = update;
     drawExtra();
     $('#ok').onclick = () => {
-      const t = tempSnap(); if (!t) return fail('日付と利用可能額を入れる');
+      const t = tempSnap(); if (!t) return fail('日付・利用可能額・限度額を入れる');
       if (t.date > today()) return fail('未来の日付は入れられない');
+      if (edit && t.date !== edit.date && others.some(x => x.date === t.date) && !confirm(`${fmtD(t.date)}の入力がすでにある。置き換える？`)) return;
       card.bills = { ...(card.bills || {}), ...collect() };
-      card.snaps = (card.snaps || []).filter(x => x.date !== t.date); card.snaps.push(t);
+      card.snaps = others.filter(x => x.date !== t.date); card.snaps.push(t);
       card.snaps.sort((a, b) => a.date < b.date ? -1 : 1);
+      if (card.snaps[card.snaps.length - 1] === t) card.limit = t.limit;   // いちばん新しい入力ならカードの設定もそろえる
       commit();
     };
+    if (edit) $('#del').onclick = () => { if (confirm(`${fmtD(edit.date)}の入力を削除する`)) { card.snaps = others; commit(); } };
   });
 }
 
@@ -1330,6 +1359,7 @@ document.addEventListener('click', e => {
     case 'editCard': cardSheet(S.cards.find(c => c.id === id)); break;
     case 'snap': snapSheet(S.cards.find(c => c.id === id)); break;
     case 'bill': billSheet(S.cards.find(c => c.id === id), t.dataset.c); break;
+    case 'editSnap': { const c = S.cards.find(c => c.id === id); snapSheet(c, c.snaps.find(s => s.date === t.dataset.date)); break; }
     case 'delSnap': {
       e.stopPropagation();
       const c = S.cards.find(c => c.id === id);
