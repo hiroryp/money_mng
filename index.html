@@ -142,6 +142,36 @@
   .sheet-actions { display: flex; gap: 8px; margin-top: 20px; }
   .sheet-actions .btn { flex: 1; padding: 12px; }
   .conf-box { margin-top: 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+
+  /* 今月の予算 */
+  .budget { margin-top: 6px; background: var(--surface); border-radius: 14px; padding: 14px 14px 14px; }
+  .bhead { display: flex; justify-content: space-between; align-items: center; }
+  .bhead .lbl { font-size: 13px; color: var(--muted); }
+  .budget .big { font-family: var(--num); font-size: 38px; font-weight: 700; letter-spacing: -.01em; line-height: 1.15; margin-top: 2px; }
+  .budget .big.neg { color: var(--card); font-size: 30px; }
+  .bsub { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .bempty { font-size: 14px; color: var(--muted); margin-top: 6px; }
+  .bar { display: flex; height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; margin-top: 12px; }
+  .bar i { display: block; height: 100%; }
+  .bar i.u { background: var(--out); } .bar i.p { background: rgba(216,161,63,.4); }
+  .bstats { display: flex; gap: 16px; font-size: 12.5px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
+  .dot.u { background: var(--out); } .dot.p { background: rgba(216,161,63,.4); }
+  /* 月ごと */
+  .mchart { display: block; width: 100%; height: auto; }
+  details.month { background: var(--surface); border-radius: 10px; margin-top: 8px; padding: 0 14px; }
+  details.month summary { list-style: none; display: flex; justify-content: space-between; align-items: center; padding: 12px 0; gap: 10px; color: var(--text); }
+  details.month summary::-webkit-details-marker { display: none; }
+  details.month[open] summary { border-bottom: 1px solid var(--line); }
+  details.month .kv { padding-bottom: 12px; }
+  details.month.m-now { outline: 1px solid rgba(92,194,173,.45); }
+  .mn { font-size: 14.5px; }
+  .ms { display: block; font-size: 12px; color: var(--muted); }
+  .mv { font-size: 16px; font-weight: 700; white-space: nowrap; }
+  .pos { color: var(--bal); } .neg { color: var(--card); }
+  .kv .kd { display: block; font-size: 11.5px; color: var(--faint); }
+  .kv .sub2 { font-size: 12px; color: var(--faint); padding-left: 10px; }
+  .tag.on { border-style: solid; border-color: var(--bal); color: var(--bal); }
   @media (prefers-reduced-motion: reduce) { #sheet, #sheetBg { transition: none; } }
 </style>
 </head>
@@ -151,6 +181,7 @@
 
 <nav class="tabs">
   <button data-tab="home" class="on">見通し</button>
+  <button data-tab="months">月ごと</button>
   <button data-tab="cards">カード</button>
   <button data-tab="flows">収支</button>
   <button data-tab="settings">設定</button>
@@ -163,82 +194,111 @@
 </section>
 
 <script>
-/* ================= 保存 ================= */
-const KEY = 'cashflow-v1';
-const defaultState = () => ({ bank: null, safeLine: 10000, horizon: 90, cards: [], subs: [], flows: [] });
-let S = load();
-function load() {
-  try { const r = localStorage.getItem(KEY); if (r) return migrate(Object.assign(defaultState(), JSON.parse(r))); } catch (e) {}
-  return defaultState();
-}
-function migrate(st) { // 旧形式（未確定額入力）からの変換
-  for (const c of st.cards || []) {
-    c.bills = c.bills || {}; if (c.confirmAfter == null) c.confirmAfter = 15;
-    c.snaps = (c.snaps || []).map(x => {
-      const conf = x.confirmed || {};
-      for (const [k, v] of Object.entries(conf)) if (!c.bills[k]) c.bills[k] = { amount: Number(v), kind: 'estimate' };
-      if (x.available != null) return { date: x.date, available: Number(x.available) };
-      const U = Object.values(conf).reduce((a, b) => a + Number(b), 0) + Number(x.unconfirmed || 0);
-      return { date: x.date, available: Number(c.limit) - U };
-    });
-  }
-  return st;
-}
-function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { alert('保存できなかった。ブラウザの容量や設定を確認してほしい。'); } }
-const uid = () => Math.random().toString(36).slice(2, 10);
+/* ===== LOGIC START ===== */
+/* 計算まわり。画面（DOM）には触らない。テストからも同じコードを読み込む。 */
 
-/* ================= 日付 ================= */
+/* ---------- 日付 ---------- */
 const pad = n => String(n).padStart(2, '0');
 const isoOf = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-const parse = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
-const today = () => isoOf(new Date());
+const parse = s => { const [y, m, d] = String(s).split('-').map(Number); return new Date(y, m - 1, d); };
 const addDays = (s, n) => { const d = parse(s); d.setDate(d.getDate() + n); return isoOf(d); };
 const dim = (y, m) => new Date(y, m + 1, 0).getDate();
 function clampDate(y, m, day) {
   const b = new Date(y, m, 1); const Y = b.getFullYear(), M = b.getMonth();
-  return isoOf(new Date(Y, M, Math.min(Number(day), dim(Y, M))));
+  return isoOf(new Date(Y, M, Math.min(Math.max(Number(day) || 1, 1), dim(Y, M))));
 }
-const ymOf = s => s.slice(0, 7);
+const ymOf = s => String(s).slice(0, 7);
 const daysBetween = (a, b) => Math.round((parse(b) - parse(a)) / 86400000);
-const WD = '日月火水木金土';
-const fmtD = s => { const d = parse(s); return `${d.getMonth() + 1}月${d.getDate()}日(${WD[d.getDay()]})`; };
-const fmtYM = k => { const [y, m] = k.split('-'); return `${y}年${Number(m)}月`; };
-const yen = n => (n < 0 ? '−' : '') + '¥' + Math.abs(Math.round(n)).toLocaleString('ja-JP');
-const num = v => { const n = Number(String(v ?? '').replace(/[,，¥￥\s]/g, '')); return isFinite(n) ? n : NaN; };
-const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const dayLabel = d => Number(d) >= 31 ? '末日' : `${d}日`;
+const monthStart = mk => mk + '-01';
+const monthEnd = mk => { const [y, m] = mk.split('-').map(Number); return clampDate(y, m - 1, 31); };
+const addMonths = (mk, n) => { const [y, m] = mk.split('-').map(Number); return ymOf(clampDate(y, m - 1 + n, 1)); };
+const isISO = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && isoOf(parse(s)) === s;
 
-/* ================= カードの締め・引落 ================= */
-// 締め日が31なら「末日」として扱う。引落日が土日なら翌月曜にずらす（祝日は未対応）
+/* ---------- 祝日・銀行休業日 ---------- */
+// 祝日法の規則から計算。春分・秋分は近似式（正式には前年2月の官報で決まる）
+const HOL = { on: true, cache: {} };
+function holidaysOf(y) {
+  if (HOL.cache[y]) return HOL.cache[y];
+  const base = new Set();
+  const add = (m, d) => base.add(`${y}-${pad(m)}-${pad(d)}`);
+  [[1, 1], [2, 11], [2, 23], [4, 29], [5, 3], [5, 4], [5, 5], [8, 11], [11, 3], [11, 23]].forEach(([m, d]) => add(m, d));
+  const nthMon = (m, n) => { const w = new Date(y, m - 1, 1).getDay(); return 1 + (1 - w + 7) % 7 + 7 * (n - 1); };
+  add(1, nthMon(1, 2)); add(7, nthMon(7, 3)); add(9, nthMon(9, 3)); add(10, nthMon(10, 2));
+  const k = y - 1980, leap = Math.floor(k / 4);
+  add(3, Math.floor(20.8431 + 0.242194 * k - leap));
+  add(9, Math.floor(23.2488 + 0.242194 * k - leap));
+  const all = new Set(base);
+  [...base].sort().forEach(h => {          // 振替休日
+    if (parse(h).getDay() === 0) { let n = addDays(h, 1); while (all.has(n)) n = addDays(n, 1); all.add(n); }
+  });
+  for (let d = `${y}-01-02`; d.startsWith(String(y)); d = addDays(d, 1)) {   // 国民の休日
+    if (!all.has(d) && parse(d).getDay() !== 0 && base.has(addDays(d, -1)) && base.has(addDays(d, 1))) all.add(d);
+  }
+  return (HOL.cache[y] = all);
+}
+function isBankHoliday(s) {
+  const d = parse(s), w = d.getDay();
+  if (w === 0 || w === 6) return true;
+  if (!HOL.on) return false;
+  const m = d.getMonth() + 1, dd = d.getDate();
+  if ((m === 12 && dd === 31) || (m === 1 && dd <= 3)) return true;
+  return holidaysOf(d.getFullYear()).has(s);
+}
+const nextBiz = s => { let x = s; while (isBankHoliday(x)) x = addDays(x, 1); return x; };
+const prevBiz = s => { let x = s; while (isBankHoliday(x)) x = addDays(x, -1); return x; };
+const shiftDate = (s, mode) => mode === 'prev' ? prevBiz(s) : mode === 'next' ? nextBiz(s) : s;
+
+/* ---------- 金額の履歴（「今月から」変更した額を過去に波及させない） ---------- */
+function amountAt(item, mk) {
+  const h = item.amountFrom || {}; let best = null;
+  for (const k of Object.keys(h)) if (k <= mk && (best === null || k > best)) best = k;
+  return best === null ? Number(item.amount) || 0 : Number(h[best]) || 0;
+}
+function setAmount(item, value, fromMonth) { // fromMonth が null なら過去も含めて変更
+  value = Number(value);
+  if (fromMonth == null) { item.amount = value; item.amountFrom = {}; return; }
+  if (amountAt(item, fromMonth) === value) return;
+  item.amountFrom = item.amountFrom || {};
+  for (const k of Object.keys(item.amountFrom)) if (k > fromMonth) delete item.amountFrom[k];
+  item.amountFrom[fromMonth] = value;
+}
+
+/* ---------- カードの締め・引落 ---------- */
+// 締め日・引落日の 31 は末日。引落日が土日・祝日・年末年始なら次の営業日
 function closingIn(card, y, m) { return clampDate(y, m, card.closeDay); }
 function lastClosingBefore(card, D) { // D より前の直近の締め日
   const d = parse(D); const c = closingIn(card, d.getFullYear(), d.getMonth());
   return c < D ? c : closingIn(card, d.getFullYear(), d.getMonth() - 1);
 }
 function prevClosing(card, c) { const d = parse(c); return closingIn(card, d.getFullYear(), d.getMonth() - 1); }
-function cycleOf(card, D) { // D の利用が属する締め日
+function cycleOf(card, D) { // D の利用が入る締め日
   const d = parse(D); const c = closingIn(card, d.getFullYear(), d.getMonth());
   return c >= D ? c : closingIn(card, d.getFullYear(), d.getMonth() + 1);
 }
 function paymentFor(card, c) {
   const d = parse(c);
-  const p = parse(clampDate(d.getFullYear(), d.getMonth() + Number(card.payOffset || 1), card.payDay));
-  const w = p.getDay(); if (w === 6) p.setDate(p.getDate() + 2); else if (w === 0) p.setDate(p.getDate() + 1);
-  return isoOf(p);
+  return nextBiz(clampDate(d.getFullYear(), d.getMonth() + (Number(card.payOffset) === 2 ? 2 : 1), card.payDay));
 }
-function unpaidClosings(card, D) { // D時点で締まっているが未引落の締め日
+function unpaidClosings(card, D) { // D 時点で締まっていて、まだ引き落とされていない締め日
   const out = []; let c = lastClosingBefore(card, D); let i = 0;
   while (paymentFor(card, c) > D && i < 4) { out.unshift(c); c = prevClosing(card, c); i++; }
   return out;
 }
-const latestSnap = card => (card.snaps && card.snaps.length) ? card.snaps[card.snaps.length - 1] : null;
-const unpaidOf = (card, sn) => Number(card.limit) - Number(sn.available); // 未引落の利用総額
-function closingsBetween(card, a, b) { // (a, b] にある締め日
-  const out = []; let c = cycleOf(card, a); if (c === a) c = cycleOf(card, addDays(a, 1));
-  while (c <= b && out.length < 24) { out.push(c); c = cycleOf(card, addDays(c, 1)); }
+// 上に加えて、D が締め日当日ならその締めも含める（締め日当日の入力の、そのあとの引落しを数えるため）
+function unpaidClosingsIncl(card, D) {
+  const out = unpaidClosings(card, D);
+  if (cycleOf(card, D) === D && paymentFor(card, D) > D) out.push(D);
   return out;
 }
-// 締めごとの金額。自分で入れたもの（確定・推定）を優先し、無ければ前後の入力を日数で按分して自動推定
+const latestSnap = card => (card.snaps && card.snaps.length) ? card.snaps[card.snaps.length - 1] : null;
+// 未引落の利用総額 = 入力した時点の限度額 − 利用可能額（限度額を後から変えても過去の記録は変わらない）
+const unpaidOf = (card, sn) => Number(sn.limit != null ? sn.limit : card.limit) - Number(sn.available);
+function closingsBetween(card, a, b) { // [a, b] にある締め日（a が締め日当日の入力なら、その締めも含める）
+  const out = []; let c = cycleOf(card, a);
+  while (c <= b && out.length < 36) { out.push(c); c = cycleOf(card, addDays(c, 1)); }
+  return out;
+}
+// 締めごとの金額。自分で入れた額（確定・推定）を優先し、無ければ前後の入力を日数で按分して推定
 function deriveBills(card, extraSnap) {
   const bills = {}; for (const [c, v] of Object.entries(card.bills || {})) bills[c] = { ...v };
   let snaps = (card.snaps || []).slice();
@@ -249,8 +309,9 @@ function deriveBills(card, extraSnap) {
     const cs = closingsBetween(card, a.date, b.date);
     if (!cs.length) continue;
     const openAtA = unpaidClosings(card, a.date);
-    let paid = 0; for (const c of openAtA) if (paymentFor(card, c) <= b.date) paid += amt(c);
     const unconfA = unpaidOf(card, a) - openAtA.reduce((x, c) => x + amt(c), 0);
+    let paid = 0; for (const c of openAtA) if (paymentFor(card, c) <= b.date) paid += amt(c);
+    if (cycleOf(card, a.date) === a.date && paymentFor(card, a.date) <= b.date) paid += bills[a.date] ? amt(a.date) : unconfA;
     const usage = unpaidOf(card, b) - unpaidOf(card, a) + paid;
     const total = Math.max(daysBetween(a.date, b.date), 1);
     cs.forEach((c, k) => {
@@ -269,157 +330,414 @@ function stateAt(card, sn, bills) {
 }
 function usageBetween(card, a, b, bills) {
   let paid = 0;
-  for (const c of unpaidClosings(card, a.date)) if (paymentFor(card, c) <= b.date) paid += bills[c] ? Number(bills[c].amount) : 0;
+  for (const c of unpaidClosingsIncl(card, a.date)) if (paymentFor(card, c) <= b.date) paid += bills[c] ? Number(bills[c].amount) : 0;
   return unpaidOf(card, b) - unpaidOf(card, a) + paid;
 }
-// 確定額を聞き始める日：締め日のN日後（引落日の前日を超えない）
 function askFrom(card, c) { const x = addDays(c, Number(card.confirmAfter ?? 15)); const y = addDays(paymentFor(card, c), -1); return x < y ? x : y; }
 function pendingConfirms(card, D, bills) {
   return unpaidClosings(card, D).filter(c => D >= askFrom(card, c) && !(bills[c] && bills[c].kind === 'confirmed'));
 }
 const kindLabel = k => ({ confirmed: '確定', estimate: '自分の推定', auto: '自動推定', none: '未設定' }[k] || '');
 
-/* ================= サブスク ================= */
-function subChargeDates(sub, from, to) { // (from, to] の課金日
+// 締め日を変えたとき、入力済みの確定額・推定を「同じ月の引落し」に付け替える
+function remapBills(oldCard, newCard) {
+  const out = {}; const dropped = [];
+  for (const [c, b] of Object.entries(oldCard.bills || {})) {
+    const payMonth = ymOf(paymentFor(oldCard, c));
+    let target = null;
+    for (let k = -2; k <= 2 && !target; k++) {
+      const d = parse(c); const nc = closingIn(newCard, d.getFullYear(), d.getMonth() + k);
+      if (ymOf(paymentFor(newCard, nc)) === payMonth) target = nc;
+    }
+    if (target && !out[target]) out[target] = b; else dropped.push(c);
+  }
+  return { bills: out, dropped };
+}
+
+/* 入力の記録から、カードの累積利用額を日付でたどれるようにする。
+   2回の入力のあいだの利用は、日付の分かっている分（サブスク・出費予定）をその日に置き、
+   残りを「そのカードを使う日」（ローテーション）に均等に置く。使う日がなければ全日に均等。 */
+function cardTimeline(S, card, bills, act) {
+  const sn = card.snaps || [];
+  if (!sn.length) return null;
+  const cum = {}; let total = 0;
+  for (let i = 1; i < sn.length; i++) {
+    const a = sn[i - 1], b = sn[i];
+    const usage = usageBetween(card, a, b, bills);
+    const pts = {}; let known = 0;
+    for (const s of S.subs) if (s.cardId === card.id) for (const ch of subCharges(s, a.date, b.date)) { pts[ch.date] = (pts[ch.date] || 0) + ch.amount; known += ch.amount; }
+    for (const p of S.planned) if (payTarget(S, p) === card.id && p.date > a.date && p.date <= b.date) { pts[p.date] = (pts[p.date] || 0) + Number(p.amount); known += Number(p.amount); }
+    // 重み＝その日にこのカードを使う割合 ×（その月の予算 ÷ 日数）。月で予算が違っても、使うペースに合わせて配る
+    const days = []; let wsum = 0, ssum = 0;
+    for (let d = addDays(a.date, 1); d <= b.date; d = addDays(d, 1)) {
+      const ac = act(d); const share = ac.some(c => c.id === card.id) ? 1 / ac.length : 0;
+      const B = budgetFor(S, ymOf(d)); const pace = B != null && B > 0 ? B / dim(parse(d).getFullYear(), parse(d).getMonth()) : 0;
+      days.push([d, share * pace, share]); wsum += share * pace; ssum += share;
+    }
+    const rest = usage - known; let run = total;
+    for (const [d, w, share] of days) {
+      run += (pts[d] || 0) + rest * (wsum > 0 ? w / wsum : ssum > 0 ? share / ssum : 1 / days.length);
+      cum[d] = run;
+    }
+    total += usage; cum[b.date] = total;   // 端数のずれを入力日でそろえる
+  }
+  return { first: sn[0].date, last: sn[sn.length - 1].date, cum, total };
+}
+function cumAt(tl, d) {
+  if (d <= tl.first) return 0;
+  if (d >= tl.last) return tl.total;
+  return tl.cum[d] ?? 0;
+}
+const clampTo = (tl, x) => x < tl.first ? tl.first : x > tl.last ? tl.last : x;
+const isMeasured = (tl, d) => !!tl && tl.first < d && d <= tl.last;
+
+/* ---------- サブスク・収入/支出の発生日 ---------- */
+function subCharges(sub, from, to) { // (from, to] の課金
   const res = []; const a = parse(from);
-  for (let i = 0; i < 48; i++) {
+  for (let i = -1; i < 400; i++) {
     const b = new Date(a.getFullYear(), a.getMonth() + i, 1);
-    if (sub.freq === 'yearly' && b.getMonth() !== Number(sub.month) - 1) { if (isoOf(b) > to) break; continue; }
+    if (isoOf(b) > to) break;
+    if (sub.freq === 'yearly' && b.getMonth() !== Number(sub.month) - 1) continue;
     const dt = clampDate(b.getFullYear(), b.getMonth(), sub.day);
-    if (dt > to) break; if (dt > from) res.push(dt);
+    if (dt > from && dt <= to) res.push({ date: dt, amount: amountAt(sub, ymOf(dt)) });
+  }
+  return res;
+}
+function flowOccurrences(f, from, to) { // [from, to] に入る発生（休日の扱いを反映した日付）
+  if (f.freq === 'once') {
+    if (!f.date) return [];
+    const d = shiftDate(f.date, f.shift);
+    return d >= from && d <= to ? [{ date: d, amount: Number(f.amount) || 0, est: false }] : [];
+  }
+  const res = []; const a = parse(from);
+  for (let i = -1; i < 400; i++) {
+    const nominal = clampDate(a.getFullYear(), a.getMonth() + i, f.day);
+    if (nominal > addDays(to, 10)) break;
+    const d = shiftDate(nominal, f.shift);
+    if (d < from || d > to) continue;
+    const mk = ymOf(nominal);
+    const ov = f.freq === 'variable' && f.overrides && f.overrides[mk] != null;
+    res.push({ date: d, amount: ov ? Number(f.overrides[mk]) : amountAt(f, mk), est: f.freq === 'variable' && !ov });
   }
   return res;
 }
 
-/* ================= 見通しの計算 ================= */
-function forecast() {
-  if (!S.bank) return null;
-  const start = S.bank.date, end = addDays(start, S.horizon);
-  const ev = [];
-
-  // 収入・支出
-  for (const f of S.flows) {
-    const sign = f.kind === 'in' ? 1 : -1;
-    if (f.freq === 'once') {
-      if (f.date > start && f.date <= end) ev.push({ date: f.date, amount: sign * f.amount, label: f.name, kind: f.kind, est: false });
-      continue;
-    }
-    const a = parse(start);
-    for (let i = 0; i < 40; i++) {
-      const dt = clampDate(a.getFullYear(), a.getMonth() + i, f.day);
-      if (dt > end) break; if (dt <= start) continue;
-      const k = ymOf(dt); const ov = f.freq === 'variable' && f.overrides && f.overrides[k] != null;
-      ev.push({ date: dt, amount: sign * (ov ? f.overrides[k] : f.amount), label: f.name, kind: f.kind, est: f.freq === 'variable' && !ov });
-    }
-  }
-
-  // カード
-  const cardInfo = {};
-  for (const card of S.cards) {
-    const snap = latestSnap(card);
-    const bills = deriveBills(card);
-    const st = snap ? stateAt(card, snap, bills) : null;
-    const D = snap ? snap.date : start;
-    const cycles = {};
-    const get = c => cycles[c] || (cycles[c] = { base: 0, est: 0, subs: 0, subsIn: 0, final: false, kind: 'open' });
-    if (st) for (const o of st.closed) { const g = get(o.c); g.base = o.amount; g.final = o.kind === 'confirmed'; g.kind = o.kind; }
-    const cc = cycleOf(card, D); const cur = get(cc); cur.base = st ? st.unconf : 0;
-    const mySubs = S.subs.filter(s => s.cardId === card.id);
-    for (const s of mySubs) for (const _ of subChargeDates(s, prevClosing(card, cc), D)) cur.subsIn += Number(s.amount);
-    const est = Number(card.dailyEst) || 0;
-    if (est > 0) for (let d = addDays(D, 1); d <= end; d = addDays(d, 1)) get(cycleOf(card, d)).est += est;
-    for (const s of mySubs) for (const dt of subChargeDates(s, D, end)) get(cycleOf(card, dt)).subs += Number(s.amount);
-
-    const pays = [];
-    for (const [c, v] of Object.entries(cycles)) {
-      const p = paymentFor(card, c);
-      if (p > start && p <= end && (v.base + v.est + v.subs) > 0) {
-        const total = v.base + v.est + v.subs;
-        const item = { closing: c, pay: p, ...v, total };
-        pays.push(item);
-        ev.push({ date: p, amount: -total, label: card.name + ' 引落', kind: 'card', est: !v.final, info: item });
-      }
-    }
-    cardInfo[card.id] = { snap, st, bills, pays: pays.sort((a, b) => a.pay < b.pay ? -1 : 1) };
-  }
-
-  ev.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : a.amount - b.amount);
-
-  // 日ごとの残高（同じ日は出金を先に引いて最低値を見る＝安全側）
-  const byDay = {}; for (const e of ev) (byDay[e.date] || (byDay[e.date] = [])).push(e);
-  let running = Number(S.bank.amount);
-  const series = [{ date: start, bal: running, low: running }];
-  for (let d = addDays(start, 1); d <= end; d = addDays(d, 1)) {
-    const list = byDay[d] || []; let outs = 0, ins = 0;
-    for (const e of list) { if (e.amount < 0) outs += e.amount; else ins += e.amount; }
-    const low = running + outs; running = low + ins;
-    series.push({ date: d, bal: running, low });
-    for (const e of list) e.balAfter = running;
-  }
-  let minI = 0; series.forEach((p, i) => { if (p.low < series[minI].low) minI = i; });
-  const firstNeg = series.find(p => p.low < 0);
-  const firstSafe = series.find(p => p.low < S.safeLine);
-  return { start, end, ev, series, minI, firstNeg, firstSafe, cardInfo, byDay };
+/* ---------- 予算・カードのローテーション ---------- */
+function budgetFor(S, mk) {
+  const b = S.budget || {}; const o = b.overrides || {};
+  if (o[mk] != null && o[mk] !== '') return Number(o[mk]);
+  return b.base == null || b.base === '' ? null : Number(b.base);
 }
+const dailyCards = S => S.cards.filter(c => c.daily !== false);
+// その日に使うカード：締め日を直近で過ぎたカード（締め日当日はまだ前のカード）。同じ締め日が複数あれば等分
+function activeOn(S, d) {
+  let best = null, out = [];
+  for (const c of dailyCards(S)) {
+    const lc = lastClosingBefore(c, d);
+    if (best === null || lc > best) { best = lc; out = [c]; } else if (lc === best) out.push(c);
+  }
+  return out;
+}
+const payTarget = (S, p) => (p.pay && p.pay !== 'bank' && S.cards.some(c => c.id === p.pay)) ? p.pay : 'bank';
+
+/* ---------- まとめて計算 ---------- */
+function compute(S, T) {
+  const nowMk = ymOf(T);
+  const bankStart = S.bank ? S.bank.date : T;
+  const end = addDays(bankStart, Number(S.horizon) || 90);
+  let firstMk = ymOf(S.created || T);   // 記録の始まり（作成日より前の日付で入力した場合はそこから）
+  for (const c of S.cards) if (c.snaps && c.snaps.length && ymOf(c.snaps[0].date) < firstMk) firstMk = ymOf(c.snaps[0].date);
+  if (firstMk > nowMk) firstMk = nowMk;
+  if (firstMk < addMonths(nowMk, -12)) firstMk = addMonths(nowMk, -12);
+  const lastMk = ymOf(end) > nowMk ? ymOf(end) : nowMk;
+
+  const cardById = {}; for (const c of S.cards) cardById[c.id] = c;
+  const activeCache = {};
+  const act = d => activeCache[d] || (activeCache[d] = activeOn(S, d));
+  const bills = {}, tls = {};
+  for (const c of S.cards) { bills[c.id] = deriveBills(c); tls[c.id] = cardTimeline(S, c, bills[c.id], act); }
+  const absorbed = p => { const t = payTarget(S, p); if (t === 'bank') return false; const tl = tls[t]; return !!tl && tl.first < p.date && p.date <= tl.last; };
+
+  /* 月ごと */
+  const months = []; const byMk = {};
+  for (let mk = firstMk; mk <= lastMk; mk = addMonths(mk, 1)) {
+    const ms = monthStart(mk), me = monthEnd(mk), before = addDays(ms, -1);
+    const B = budgetFor(S, mk);
+    let spentCard = 0;
+    for (const c of S.cards) {
+      const tl = tls[c.id]; if (!tl) continue;
+      const lo = clampTo(tl, before), hi = clampTo(tl, me);
+      if (hi <= lo) continue;
+      let v = cumAt(tl, hi) - cumAt(tl, lo);
+      for (const s of S.subs) if (s.cardId === c.id) for (const ch of subCharges(s, lo, hi)) v -= ch.amount;
+      for (const p of S.planned) if (!p.inBudget && payTarget(S, p) === c.id && p.date > lo && p.date <= hi) v -= Number(p.amount);
+      spentCard += v;
+    }
+    let plannedIn = 0, plannedDone = 0, special = 0;
+    for (const p of S.planned) {
+      if (p.date < ms || p.date > me) continue;
+      if (!p.inBudget) { special += Number(p.amount); continue; }
+      if (absorbed(p)) continue;
+      plannedIn += Number(p.amount);
+      if (payTarget(S, p) === 'bank' && p.date <= T) plannedDone += Number(p.amount);
+    }
+    // 記録のない日（その日に使うカードの入力でまだ測れていない日）に、残りの予算を均等に置く
+    let W = 0; const slots = [];
+    for (let d = ms; d <= me; d = addDays(d, 1)) {
+      const a = act(d); const k = a.length;
+      for (const c of a) if (!isMeasured(tls[c.id], d)) { W += 1 / k; slots.push([d, c.id, 1 / k]); }
+    }
+    const R = (B ?? 0) - spentCard - plannedIn;
+    const est = B != null && W > 0 ? Math.max(0, R) : 0;
+    const rate = W > 0 ? est / W : 0;
+    let income = 0, fixed = 0, incomeEst = false;
+    for (const f of S.flows) for (const o of flowOccurrences(f, ms, me)) {
+      if (f.kind === 'in') { income += o.amount; if (o.est) incomeEst = true; } else fixed += o.amount;
+    }
+    let subs = 0;
+    for (const s of S.subs) if (cardById[s.cardId]) for (const ch of subCharges(s, before, me)) subs += ch.amount;
+    const variable = spentCard + plannedIn + est;
+    const row = {
+      mk, B, spentCard, plannedIn, plannedDone, used: spentCard + plannedDone, upcoming: plannedIn - plannedDone,
+      remaining: R, W, est, rate, slots, income, incomeEst, fixed, subs, variable, special,
+      net: income - fixed - subs - variable - special,
+      status: mk < nowMk ? 'past' : mk === nowMk ? 'now' : 'future',
+      partial: mk < nowMk && W > 0,
+    };
+    months.push(row); byMk[mk] = row;
+  }
+
+  /* 今月の数字 */
+  const cur = byMk[nowMk];
+  const daysLeft = daysBetween(T, monthEnd(nowMk)) + 1;
+  const budgetNow = { ...cur, daysLeft, perDay: cur.B == null ? null : Math.max(0, cur.remaining) / daysLeft };
+
+  /* 残高の見通し */
+  let forecast = null; const cardInfo = {};
+  for (const c of S.cards) cardInfo[c.id] = { bills: bills[c.id], tl: tls[c.id], snap: latestSnap(c), st: null, pays: [] };
+  if (S.bank) {
+    const start = S.bank.date; const ev = [];
+    for (const f of S.flows) for (const o of flowOccurrences(f, addDays(start, 1), end)) {
+      ev.push({ date: o.date, amount: (f.kind === 'in' ? 1 : -1) * o.amount, label: f.name, kind: f.kind, est: o.est });
+    }
+    for (const p of S.planned) {
+      if (payTarget(S, p) !== 'bank') continue;
+      if (p.date > start && p.date <= end) ev.push({ date: p.date, amount: -Number(p.amount), label: p.name, kind: 'plan', est: false });
+    }
+    for (const card of S.cards) {
+      const info = cardInfo[card.id]; const snap = info.snap; const tl = tls[card.id];
+      const st = snap ? stateAt(card, snap, bills[card.id]) : null; info.st = st;
+      const D = snap ? snap.date : start;
+      const cycles = {};
+      const get = c => cycles[c] || (cycles[c] = { base: 0, bud: 0, plan: 0, subs: 0, subsIn: 0, final: false, kind: 'open' });
+      if (st) for (const o of st.closed) { const g = get(o.c); g.base = o.amount; g.final = o.kind === 'confirmed'; g.kind = o.kind; }
+      const cc = cycleOf(card, D); get(cc).base = st ? st.unconf : 0;
+      for (const s of S.subs) if (s.cardId === card.id) {
+        for (const ch of subCharges(s, prevClosing(card, cc), D)) get(cc).subsIn += ch.amount;
+        for (const ch of subCharges(s, D, end)) get(cycleOf(card, ch.date)).subs += ch.amount;
+      }
+      for (const p of S.planned) if (payTarget(S, p) === card.id && p.date > D && p.date <= end) get(cycleOf(card, p.date)).plan += Number(p.amount);
+      for (const m of months) {
+        if (!m.rate) continue;
+        for (const [d, cid, share] of m.slots) if (cid === card.id && d > D && d <= end) get(cycleOf(card, d)).bud += m.rate * share;
+      }
+      for (const [c, v] of Object.entries(cycles)) {
+        const p = paymentFor(card, c);
+        const total = Math.round(v.base + v.bud + v.plan + v.subs);
+        if (p > start && p <= end && total > 0) {
+          const item = { closing: c, pay: p, ...v, total };
+          info.pays.push(item);
+          ev.push({ date: p, amount: -total, label: card.name + ' 引落', kind: 'card', est: !v.final, info: item });
+        }
+      }
+      info.pays.sort((a, b) => a.pay < b.pay ? -1 : 1);
+    }
+    ev.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : a.amount - b.amount);
+    const byDay = {}; for (const e of ev) (byDay[e.date] || (byDay[e.date] = [])).push(e);
+    let running = Number(S.bank.amount);
+    const series = [{ date: start, bal: running, low: running }];
+    for (let d = addDays(start, 1); d <= end; d = addDays(d, 1)) {
+      const list = byDay[d] || []; let outs = 0, ins = 0;
+      for (const e of list) { if (e.amount < 0) outs += e.amount; else ins += e.amount; }
+      const low = running + outs; running = low + ins;
+      series.push({ date: d, bal: running, low });
+      for (const e of list) e.balAfter = running;
+    }
+    let minI = 0; series.forEach((p, i) => { if (p.low < series[minI].low) minI = i; });
+    forecast = { start, end, ev, series, minI, byDay,
+      firstNeg: series.find(p => p.low < 0), firstSafe: series.find(p => p.low < S.safeLine) };
+  }
+  return { T, months, byMk, budgetNow, forecast, cardInfo, tls, bills, act };
+}
+
+/* ---------- 保存データの形をそろえる（旧版のデータもそのまま読む） ---------- */
+const defaultState = () => ({ v: 2, bank: null, safeLine: 10000, horizon: 90, cards: [], subs: [], flows: [], planned: [], budget: { base: null, overrides: {} }, created: null });
+function migrate(st, T) {
+  st = Object.assign(defaultState(), st || {});
+  for (const k of ['cards', 'subs', 'flows', 'planned']) if (!Array.isArray(st[k])) st[k] = [];
+  if (!st.budget || typeof st.budget !== 'object') st.budget = { base: null, overrides: {} };
+  if (!st.budget.overrides || typeof st.budget.overrides !== 'object') st.budget.overrides = {};
+  let legacyDaily = 0;
+  for (const c of st.cards) {
+    c.bills = c.bills || {}; if (c.confirmAfter == null) c.confirmAfter = 15;
+    if (c.daily == null) c.daily = true;
+    if (c.dailyEst) legacyDaily += Number(c.dailyEst) || 0;
+    delete c.dailyEst;
+    c.snaps = (c.snaps || []).filter(x => x && isISO(x.date)).map(x => {   // 未確定額で入力していた頃の形式も変換
+      const conf = x.confirmed || {};
+      for (const [k, v] of Object.entries(conf)) if (!c.bills[k]) c.bills[k] = { amount: Number(v), kind: 'estimate' };
+      const lim = x.limit != null ? Number(x.limit) : Number(c.limit);
+      if (x.available != null) return { date: x.date, available: Number(x.available), limit: lim };
+      const U = Object.values(conf).reduce((a, b) => a + Number(b), 0) + Number(x.unconfirmed || 0);
+      return { date: x.date, available: lim - U, limit: lim };
+    }).sort((a, b) => a.date < b.date ? -1 : 1);
+  }
+  for (const f of st.flows) { f.amountFrom = f.amountFrom || {}; f.overrides = f.overrides || {}; if (!f.shift) f.shift = 'keep'; }
+  for (const s of st.subs) s.amountFrom = s.amountFrom || {};
+  st.planned = st.planned.filter(p => p && isISO(p.date));
+  if (legacyDaily && st.legacyDaily == null) st.legacyDaily = legacyDaily;
+  if (!st.created) {
+    const ds = [T];
+    if (st.bank && isISO(st.bank.date)) ds.push(st.bank.date);
+    for (const c of st.cards) for (const x of c.snaps) ds.push(x.date);
+    st.created = ds.sort()[0];
+  }
+  st.v = 2;
+  return st;
+}
+/* ===== LOGIC END ===== */
+
+/* ================= 保存 ================= */
+const KEY = 'cashflow-v1';
+let loadProblem = null;
+const today = () => isoOf(new Date());
+let S = load();
+function load() {
+  let raw = null;
+  try { raw = localStorage.getItem(KEY); } catch (e) { loadProblem = 'ブラウザの保存領域を読めなかった。'; return migrate(null, today()); }
+  if (!raw) return migrate(null, today());
+  try { return migrate(JSON.parse(raw), today()); }
+  catch (e) {
+    // 読めないデータは消さずに別の名前で残す
+    try { localStorage.setItem(KEY + '-unreadable-' + Date.now(), raw); } catch (_) {}
+    loadProblem = '保存データを読み込めなかったため、空の状態で開いた。元のデータはブラウザ内に別名で残してある。';
+    return migrate(null, today());
+  }
+}
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify(S)); }
+  catch (e) { alert('保存できなかった。ブラウザの容量や設定を確認してほしい。'); }
+}
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+/* ================= 表示用 ================= */
+const WD = '日月火水木金土';
+const fmtD = s => { const d = parse(s); return `${d.getMonth() + 1}月${d.getDate()}日(${WD[d.getDay()]})`; };
+const fmtYM = k => { const [y, m] = k.split('-'); return `${y}年${Number(m)}月`; };
+const fmtM = k => `${Number(k.split('-')[1])}月`;
+const yen = n => (n < 0 ? '−' : '') + '¥' + Math.abs(Math.round(n)).toLocaleString('ja-JP');
+const syen = n => (Math.round(n) > 0 ? '+' : '') + yen(n);
+const num = v => { const t = String(v ?? '').replace(/[,，¥￥\s]/g, '').replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)); if (t === '') return NaN; const n = Number(t); return isFinite(n) ? n : NaN; };
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const dayLabel = d => Number(d) >= 31 ? '末日' : `${d}日`;
+const $ = s => document.querySelector(s);
+const val = id => document.getElementById(id).value;
+const radio = name => (document.querySelector(`input[name=${name}]:checked`) || {}).value;
 
 /* ================= 画面 ================= */
-const $ = s => document.querySelector(s);
 let tab = 'home';
-const titles = { home: '見通し', cards: 'カード', flows: '収支', settings: '設定' };
-
-function render() {
+const titles = { home: '見通し', months: '月ごと', cards: 'カード', flows: '収支', settings: '設定' };
+function render(keepScroll) {
+  const y = window.scrollY;
   $('#pageTitle').textContent = titles[tab];
   document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
-  ({ home: renderHome, cards: renderCards, flows: renderFlows, settings: renderSettings })[tab]();
-  window.scrollTo(0, 0);
+  const C = compute(S, today());
+  ({ home: renderHome, months: renderMonths, cards: renderCards, flows: renderFlows, settings: renderSettings })[tab](C);
+  window.scrollTo(0, keepScroll ? y : 0);
 }
+const commit = () => { save(); closeSheet(); render(true); };
 
 /* ---------- 見通し ---------- */
 function breakText(i) {
-  let t = i.kind !== 'open' ? `${kindLabel(i.kind)} ${yen(i.base)}` : `入力時点の利用 ${yen(i.base)}` + (i.est ? ` ＋想定 ${yen(i.est)}` : '') + (i.subs ? ` ＋サブスク ${yen(i.subs)}` : '');
-  if (i.subsIn + i.subs > 0) t += `（うちサブスク ${yen(i.subsIn + i.subs)}）`;
-  return t;
+  if (i.kind !== 'open') {
+    let t = `${kindLabel(i.kind)} ${yen(i.base)}`;
+    if (i.subsIn + i.subs > 0) t += `（うちサブスク ${yen(i.subsIn + i.subs)}）`;
+    return t;
+  }
+  const parts = [`入力済み ${yen(i.base)}`];
+  if (i.bud >= 1) parts.push(`予算から ${yen(i.bud)}`);
+  if (i.plan) parts.push(`予定 ${yen(i.plan)}`);
+  if (i.subs) parts.push(`サブスク ${yen(i.subs)}`);
+  return parts.join(' ＋');
 }
-function renderHome() {
+function budgetBlock(C) {
+  const b = C.budgetNow; const mk = b.mk;
+  if (b.B == null) {
+    const hint = S.legacyDaily ? `<p class="hint">以前の「1日あたりの想定利用額」は使わなくなった。その設定（合計 ${yen(S.legacyDaily)}/日）を月にすると約 ${yen(S.legacyDaily * 30)}。</p>` : '';
+    return `<section class="budget">
+      <div class="bhead"><span class="lbl">${fmtM(mk)}に使う金額</span></div>
+      <p class="bempty">決めると「あと使える額」と、カード引落しの見込みが出る。</p>${hint}
+      <div class="sheet-actions"><button class="btn primary" data-act="budget">予算を決める</button><button class="btn" data-act="addPlan">出費予定を追加</button></div>
+    </section>`;
+  }
+  const over = b.remaining < 0;
+  const B = Math.max(b.B, 1);
+  const usedW = Math.min(100, Math.max(0, b.used) / B * 100);
+  const planW = Math.min(100 - usedW, Math.max(0, b.upcoming) / B * 100);
+  const notes = [];
+  const T = C.T;
+  const activeNow = C.act(T);
+  for (const c of activeNow) {
+    const s = latestSnap(c);
+    if (!s) notes.push(`今使っているカード（${esc(c.name)}）の利用可能額が未入力`);
+    else if (daysBetween(s.date, T) >= 3) notes.push(`今使っているカード（${esc(c.name)}）の最終入力が${daysBetween(s.date, T)}日前。入力すると「使った」が最新になる`);
+  }
+  if (S.cards.length && !dailyCards(S).length) notes.push('日常の支払いに使うカードがない（カードの編集で設定）');
+  return `<section class="budget">
+    <div class="bhead"><span class="lbl">${fmtM(mk)} あと使える</span><button class="btn small ghost" data-act="budget">予算 ${yen(b.B)}</button></div>
+    <div class="big num ${over ? 'neg' : ''}">${over ? `${yen(-b.remaining)} オーバー` : yen(b.remaining)}</div>
+    <div class="bsub">${over ? '予算を超えている' : `1日あたり <span class="num">${yen(b.perDay)}</span>（今日を入れて残り${b.daysLeft}日）`}</div>
+    <div class="bar" role="img" aria-label="使った ${yen(b.used)}、予定 ${yen(b.upcoming)}"><i class="u" style="width:${usedW}%"></i><i class="p" style="width:${planW}%"></i></div>
+    <div class="bstats"><span><i class="dot u"></i>使った <span class="num">${yen(b.used)}</span></span><span><i class="dot p"></i>予定 <span class="num">${yen(b.upcoming)}</span></span></div>
+    ${notes.length ? `<ul class="notes">${notes.map(n => `<li>${n}</li>`).join('')}</ul>` : ''}
+    <button class="btn block" data-act="addPlan" style="margin-top:12px">出費予定を追加</button>
+  </section>`;
+}
+function renderHome(C) {
   const v = $('#view');
+  const top = loadProblem ? `<section class="verdict danger">${loadProblem}</section>` : '';
   if (!S.bank) {
-    v.innerHTML = `<div class="empty"><p>最初に今日の口座残高を入れる。<br>ここを起点に、収入と引落しを日付順に積み上げて見通しを出す。</p>
+    v.innerHTML = top + budgetBlock(C) + `<div class="empty"><p>今日の口座残高を入れると、収入と引落しを日付順に積み上げて残高の見通しを出す。</p>
       <button class="btn primary" data-act="bank">口座残高を入力</button></div>`;
     return;
   }
-  const F = forecast();
+  const F = C.forecast;
   const minP = F.series[F.minI];
   let cls = '', msg;
   if (F.firstNeg) { cls = 'danger'; msg = `<strong>${fmtD(F.firstNeg.date)}</strong> に残高がマイナス（<span class="num">${yen(F.firstNeg.low)}</span>）になる見込み。`; }
   else if (F.firstSafe) { cls = 'warn'; msg = `<strong>${fmtD(F.firstSafe.date)}</strong> に安全ライン ${yen(S.safeLine)} を下回る（<span class="num">${yen(F.firstSafe.low)}</span>）見込み。`; }
   else msg = `${S.horizon}日先まで安全ライン以上。最も低いのは <strong>${fmtD(minP.date)}</strong> の <span class="num">${yen(minP.low)}</span>。`;
 
-  const notes = [];
-  const bAge = daysBetween(S.bank.date, today());
+  const notes = []; const T = C.T;
+  const bAge = daysBetween(S.bank.date, T);
   if (bAge >= 3) notes.push(`口座残高の入力が${bAge}日前のまま`);
   for (const c of S.cards) {
-    const s = latestSnap(c);
-    if (!s) { notes.push(`${esc(c.name)}：利用可能額が未入力（0円として計算中）`); continue; }
-    const a = daysBetween(s.date, today()); if (a >= 7) notes.push(`${esc(c.name)}：最終入力から${a}日`);
-    const info = F.cardInfo[c.id];
-    for (const cl of pendingConfirms(c, today(), info.bills)) notes.push(`${esc(c.name)}：${fmtD(cl)}締めの確定額が未入力（カードタブから）`);
+    const info = C.cardInfo[c.id]; const s = info.snap;
+    if (!s) { notes.push(`${esc(c.name)}：利用可能額が未入力`); continue; }
+    for (const cl of pendingConfirms(c, T, info.bills)) notes.push(`${esc(c.name)}：${fmtD(cl)}締めの確定額が未入力（カードタブから）`);
     if (info.st && info.st.neg) notes.push(`${esc(c.name)}：締め分の金額が利用総額を上回っている（カードタブで確認）`);
   }
   if (!S.cards.length) notes.push('カードが未登録');
 
   const upcoming = F.ev.slice(0, 20).map(e => {
-    let sub = '';
-    if (e.kind === 'card') {
-      const i = e.info;
-      sub = breakText(i);
-    }
+    const sub = e.kind === 'card' ? breakText(e.info) : '';
     const c = e.kind === 'in' ? 'in' : e.kind === 'card' ? 'cardc' : 'out';
     return `<li><span class="d">${fmtD(e.date)}</span>
-      <span class="n">${esc(e.label)}${e.est ? '<span class="tag">見込み</span>' : ''}${sub ? `<span class="sub">${sub}</span>` : ''}</span>
-      <span class="a ${c}">${e.amount > 0 ? '+' : ''}${yen(e.amount)}<span class="after">残 ${yen(e.balAfter)}</span></span></li>`;
+      <span class="n">${esc(e.label)}${e.est ? '<span class="tag">見込み</span>' : ''}${e.kind === 'plan' ? '<span class="tag">予定</span>' : ''}${sub ? `<span class="sub">${sub}</span>` : ''}</span>
+      <span class="a ${c}">${syen(e.amount)}<span class="after">残 ${yen(e.balAfter)}</span></span></li>`;
   }).join('');
 
-  v.innerHTML = `
+  v.innerHTML = top + budgetBlock(C) + `
     <section class="now">
       <div><div class="lbl">口座残高　${fmtD(S.bank.date)}時点</div><div class="big">${yen(S.bank.amount)}</div></div>
       <button class="btn ghost" data-act="bank">更新</button>
@@ -429,7 +747,7 @@ function renderHome() {
       <div class="readout" id="readout"></div>
       <div id="chart"></div>
       <div class="legend"><span><i style="background:var(--bal)"></i>残高</span><span><i style="background:var(--card)"></i>カード引落</span><span><i style="background:var(--warn)"></i>安全ライン</span></div>
-      <div class="range">${[30, 90, 180].map(r => `<button data-range="${r}" class="${S.horizon === r ? 'on' : ''}">${r === 30 ? '1か月' : r === 90 ? '3か月' : '6か月'}</button>`).join('')}</div>
+      <div class="range">${[30, 90, 180].map(r => `<button data-range="${r}" class="${Number(S.horizon) === r ? 'on' : ''}">${r === 30 ? '1か月' : r === 90 ? '3か月' : '6か月'}</button>`).join('')}</div>
     </section>
     <h3>これからの入出金</h3>
     ${upcoming ? `<ul class="events">${upcoming}</ul>` : `<p class="hint">期間内に予定された入出金はない。収支タブで収入・家賃などを登録する。</p>`}`;
@@ -448,21 +766,17 @@ function drawChart(F) {
   let d = `M${X(0).toFixed(1)},${Y(s[0].bal).toFixed(1)}`;
   for (let i = 1; i < n; i++) d += ` H${X(i).toFixed(1)} V${Y(s[i].low).toFixed(1)} V${Y(s[i].bal).toFixed(1)}`;
   const area = d + ` V${Y(lo).toFixed(1)} H${X(0).toFixed(1)} Z`;
-
   let ticks = '';
   s.forEach((p, i) => {
-    if (p.date.endsWith('-01')) {
-      ticks += `<line x1="${X(i)}" x2="${X(i)}" y1="${pt}" y2="${H - pb}" stroke="#2d343e" stroke-width="1"/>
+    if (p.date.endsWith('-01')) ticks += `<line x1="${X(i)}" x2="${X(i)}" y1="${pt}" y2="${H - pb}" stroke="#2d343e" stroke-width="1"/>
         <text x="${X(i) + 3}" y="${H - 6}" fill="#5c6570" font-size="10">${Number(p.date.slice(5, 7))}月</text>`;
-    }
   });
   let marks = '';
   for (const e of F.ev) if (e.kind === 'card') {
     const i = daysBetween(F.start, e.date);
     marks += `<circle cx="${X(i)}" cy="${Y(s[i].bal)}" r="3.2" fill="#e46f7a" stroke="#1a1e24" stroke-width="1.5"/>`;
   }
-  const mi = F.minI;
-  const safeY = Y(S.safeLine), zeroY = Y(0);
+  const mi = F.minI; const safeY = Y(S.safeLine), zeroY = Y(0);
   $('#chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" id="svg">
     <defs><linearGradient id="g" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#5cc2ad" stop-opacity=".22"/><stop offset="1" stop-color="#5cc2ad" stop-opacity="0"/></linearGradient></defs>
     ${ticks}
@@ -473,14 +787,13 @@ function drawChart(F) {
     ${marks}
     <circle cx="${X(mi)}" cy="${Y(s[mi].low)}" r="5" fill="none" stroke="#e8eaed" stroke-width="1.5"/>
     <line id="cur" x1="0" x2="0" y1="${pt}" y2="${H - pb}" stroke="#8b939e" stroke-width="1" opacity="0"/>
-    <rect x="0" y="0" width="${W}" height="${H}" fill="transparent" id="hit"/>
+    <rect x="0" y="0" width="${W}" height="${H}" fill="transparent"/>
   </svg>`;
-
   const showAt = i => {
     const p = s[i]; const evs = F.byDay[p.date] || [];
     $('#readout').innerHTML = `<div class="rd">${fmtD(p.date)}${i === mi ? '　期間中の最低' : ''}</div>
       <div><span class="rb">${yen(i === mi ? p.low : p.bal)}</span>
-      ${evs.length ? `<span class="rd">　${evs.map(e => esc(e.label) + ' ' + (e.amount > 0 ? '+' : '') + yen(e.amount)).join('、')}</span>` : ''}</div>`;
+      ${evs.length ? `<span class="rd">　${evs.map(e => esc(e.label) + ' ' + syen(e.amount)).join('、')}</span>` : ''}</div>`;
   };
   showAt(mi);
   const svg = $('#svg'), cur = $('#cur');
@@ -496,19 +809,68 @@ function drawChart(F) {
   svg.addEventListener('pointerleave', () => { cur.setAttribute('opacity', '0'); showAt(mi); });
 }
 
+/* ---------- 月ごと ---------- */
+function renderMonths(C) {
+  const ms = C.months.slice();
+  const maxAbs = Math.max(1, ...ms.map(m => Math.abs(m.net)));
+  const W = 360, H = 120, mid = H / 2, bw = W / ms.length;
+  const bars = ms.map((m, i) => {
+    const h = Math.abs(m.net) / maxAbs * (mid - 14);
+    const y = m.net >= 0 ? mid - h : mid;
+    const col = m.net >= 0 ? '#5cc2ad' : '#e46f7a';
+    const op = m.status === 'future' ? .45 : 1;
+    return `<rect x="${(i * bw + bw * .18).toFixed(1)}" y="${y.toFixed(1)}" width="${(bw * .64).toFixed(1)}" height="${Math.max(h, 1).toFixed(1)}" rx="2" fill="${col}" opacity="${op}"/>
+      <text x="${(i * bw + bw / 2).toFixed(1)}" y="${H - 2}" fill="${m.status === 'now' ? '#e8eaed' : '#5c6570'}" font-size="10" text-anchor="middle">${Number(m.mk.slice(5))}</text>`;
+  }).join('');
+  const chart = `<section class="chart-box"><svg viewBox="0 0 ${W} ${H}" class="mchart" role="img" aria-label="月ごとの収支">
+      <line x1="0" x2="${W}" y1="${mid}" y2="${mid}" stroke="#2d343e"/>${bars}</svg>
+      <div class="legend"><span><i style="background:var(--bal)"></i>黒字</span><span><i style="background:var(--card)"></i>赤字</span><span>薄い棒は予想</span></div></section>`;
+  const rows = ms.slice().reverse().map(m => {
+    const tag = m.status === 'now' ? '<span class="tag on">今月</span>' : m.status === 'future' ? '<span class="tag">予想</span>' : m.partial ? '<span class="tag">推定を含む</span>' : '';
+    const out = m.fixed + m.subs + m.variable + m.special;
+    return `<details class="month m-${m.status}" ${m.status === 'now' ? 'open' : ''}>
+      <summary><span class="mn">${fmtYM(m.mk)}${tag}<span class="ms">収入 ${yen(m.income)}　支出 ${yen(out)}</span></span>
+        <span class="mv num ${m.net < 0 ? 'neg' : 'pos'}">${syen(m.net)}</span></summary>
+      <div class="kv">
+        <span class="k">収入${m.incomeEst ? ' <span class="tag">見込みを含む</span>' : ''}</span><span class="v in">${yen(m.income)}</span>
+        <span class="k">口座からの固定費</span><span class="v">${yen(m.fixed)}</span>
+        <span class="k">サブスク</span><span class="v">${yen(m.subs)}</span>
+        <span class="k">変動費<span class="kd">${m.B != null ? `予算 ${yen(m.B)}` : '予算未設定'}</span></span><span class="v">${yen(m.variable)}</span>
+        ${m.status !== 'future' ? `<span class="k sub2">うちカードで使った</span><span class="v sub2">${yen(m.spentCard)}</span>` : ''}
+        ${m.plannedIn ? `<span class="k sub2">うち出費予定</span><span class="v sub2">${yen(m.plannedIn)}</span>` : ''}
+        ${m.est >= 1 ? `<span class="k sub2">うち残りの予算（見込み）</span><span class="v sub2">${yen(m.est)}</span>` : ''}
+        <span class="k">予算外の出費</span><span class="v">${yen(m.special)}</span>
+        <span class="k"><strong>収支</strong></span><span class="v"><strong>${syen(m.net)}</strong></span>
+      </div>
+    </details>`;
+  }).join('');
+  $('#view').innerHTML = chart + `<p class="hint">カードの支出は使った月で数える。記録のない日は、その月の残りの予算を使ったとみなす。</p>` + rows;
+}
+
 /* ---------- カード ---------- */
-function renderCards() {
+function rotationText(C, card) {
+  const mk = C.budgetNow.mk; const ranges = []; let st = null, prev = null;
+  for (let d = monthStart(mk); d <= monthEnd(mk); d = addDays(d, 1)) {
+    const on = C.act(d).some(c => c.id === card.id);
+    if (on && st === null) st = d;
+    if (!on && st !== null) { ranges.push([st, prev]); st = null; }
+    prev = d;
+  }
+  if (st !== null) ranges.push([st, prev]);
+  if (!ranges.length) return '';
+  const dd = s => `${Number(s.slice(8))}日`;
+  return `${fmtM(mk)}は ${ranges.map(([a, b]) => a === b ? dd(a) : `${dd(a)}〜${dd(b)}`).join('、')} に使う想定`;
+}
+function renderCards(C) {
   const v = $('#view');
-  const F = forecast();
   if (!S.cards.length) {
     v.innerHTML = `<div class="empty"><p>使っているカードを登録する。<br>締め日・引落日・限度額を入れておけば、どの利用がいつ口座から引かれるかを自動で振り分ける。</p>
       <button class="btn primary" data-act="addCard">カードを追加</button></div>`;
     return;
   }
+  const T = C.T;
   v.innerHTML = S.cards.map(card => {
-    const snaps = card.snaps || [];
-    const bills = deriveBills(card);
-    const s = latestSnap(card);
+    const info = C.cardInfo[card.id]; const snaps = card.snaps || []; const bills = info.bills; const s = info.snap;
     let last = '<p class="hint">利用可能額がまだ入力されていない。</p>';
     if (s) {
       const st = stateAt(card, s, bills);
@@ -521,28 +883,28 @@ function renderCards() {
         ${use != null ? `<span class="k">前回（${fmtD(prev.date)}）からの利用</span><span class="v">${use < 0 ? `${yen(use)} <span class="tag">返品・反映ずれ?</span>` : '+' + yen(use)}</span>` : ''}
       </div>${st.neg ? `<p class="hint" style="color:var(--card)">締め分の金額が利用総額（限度額−利用可能額）を ${yen(-st.neg)} 上回っている。引落し後の枠の戻りがまだか、締め分の金額が実際より大きい可能性がある。</p>` : ''}`;
     }
-    const pend = s ? pendingConfirms(card, today(), bills) : [];
+    const pend = s ? pendingConfirms(card, T, bills) : [];
     const pendHtml = pend.map(c => `<div class="verdict warn">${fmtD(c)}締めの確定額が出ている頃。
       <button class="btn small" data-act="bill" data-id="${card.id}" data-c="${c}" style="margin-left:4px">確定額を入力</button></div>`).join('');
     let pays = '';
-    if (F && F.cardInfo[card.id]) {
-      const ps = F.cardInfo[card.id].pays;
+    if (C.forecast) {
+      const ps = info.pays;
       pays = ps.length ? `<div class="pays">${ps.map(p => `<div class="pay"><span>${fmtD(p.pay)}${p.final ? '' : '<span class="tag">見込み</span>'}
         <span class="break">${breakText(p)}</span></span>
         <span class="num cardc">${yen(p.total)}</span></div>`).join('')}</div>` : '';
-    } else if (!S.bank) pays = '<p class="hint">口座残高を入れると引落予定も表示される。</p>';
-
+    } else pays = '<p class="hint">口座残高を入れると引落予定も表示される。</p>';
     const hist = snaps.slice(-12).reverse().map((x, idx) => {
       const older = snaps[snaps.length - 2 - idx];
       const u = older ? usageBetween(card, older, x, bills) : null;
       return `<li><span>${fmtD(x.date)}<span style="display:block;font-size:11.5px;color:var(--faint)">利用可能 ${yen(x.available)}</span></span>
-        <span class="num">${u != null ? (u >= 0 ? '+' : '') + yen(u) : '—'}</span>
+        <span class="num">${u != null ? syen(u) : '—'}</span>
         <button class="btn small danger" data-act="delSnap" data-id="${card.id}" data-date="${x.date}">削除</button></li>`;
     }).join('');
-
-    return `<article class="item">
+    const rot = card.daily !== false ? rotationText(C, card) : '日常の支払いには使わない設定';
+    return `<article class="item" data-card="${card.id}">
       <header><h4>${esc(card.name)}</h4><button class="btn small ghost" data-act="editCard" data-id="${card.id}">編集</button></header>
-      <p class="meta">締め ${dayLabel(card.closeDay)}／引落 ${Number(card.payOffset) === 2 ? '翌々月' : '翌月'}${dayLabel(card.payDay)}／限度額 ${yen(card.limit)}${Number(card.dailyEst) ? `／想定 ${yen(card.dailyEst)}/日` : ''}</p>
+      <p class="meta">締め ${dayLabel(card.closeDay)}／引落 ${Number(card.payOffset) === 2 ? '翌々月' : '翌月'}${dayLabel(card.payDay)}／限度額 ${yen(card.limit)}</p>
+      ${rot ? `<p class="meta">${rot}</p>` : ''}
       ${pendHtml}${last}${pays}
       <div class="actions"><button class="btn primary block" data-act="snap" data-id="${card.id}">利用可能額を入力</button></div>
       ${snaps.length ? `<details><summary>入力の履歴</summary><ul class="hist">${hist}</ul></details>` : ''}
@@ -551,32 +913,42 @@ function renderCards() {
 }
 
 /* ---------- 収支 ---------- */
+const shiftText = s => s === 'prev' ? '・休日は前の平日' : s === 'next' ? '・休日は次の平日' : '';
 function freqText(f) {
-  if (f.freq === 'once') return fmtD(f.date) + '（1回のみ）';
-  return `毎月${dayLabel(f.day)}` + (f.freq === 'variable' ? '・金額は変動' : '');
+  if (f.freq === 'once') return fmtD(f.date) + '（1回のみ）' + shiftText(f.shift);
+  return `毎月${dayLabel(f.day)}` + (f.freq === 'variable' ? '・金額は変動' : '') + shiftText(f.shift);
 }
-function renderFlows() {
-  const v = $('#view');
+const payName = p => { const t = payTarget(S, p); if (t === 'bank') return '口座・現金'; return S.cards.find(c => c.id === t).name; };
+function renderFlows(C) {
+  const mk = ymOf(C.T);
   const row = f => `<div class="row" data-act="editFlow" data-id="${f.id}">
       <div><div class="rn">${esc(f.name)}</div><div class="rm">${freqText(f)}</div></div>
-      <div class="ra ${f.kind === 'in' ? 'in' : 'out'}">${f.freq === 'variable' ? '<span class="tag" style="margin:0 6px 0 0">見込み</span>' : ''}${yen(f.amount)}
+      <div class="ra ${f.kind === 'in' ? 'in' : 'out'}">${f.freq === 'variable' ? '<span class="tag" style="margin:0 6px 0 0">見込み</span>' : ''}${yen(f.freq === 'once' ? f.amount : amountAt(f, mk))}
         ${f.freq === 'variable' ? `<div><button class="btn small" data-act="override" data-id="${f.id}" style="margin-top:6px">月ごとの実額</button></div>` : ''}</div>
     </div>`;
-  const ins = S.flows.filter(f => f.kind === 'in'), outs = S.flows.filter(f => f.kind === 'out');
+  const ins = S.flows.filter(f => f.kind === 'in'), outs = S.flows.filter(f => f.kind !== 'in');
   const subs = S.subs.map(s => {
     const c = S.cards.find(c => c.id === s.cardId);
     return `<div class="row" data-act="editSub" data-id="${s.id}">
       <div><div class="rn">${esc(s.name)}</div><div class="rm">${s.freq === 'yearly' ? `毎年${s.month}月${dayLabel(s.day)}` : `毎月${dayLabel(s.day)}`}・${c ? esc(c.name) : 'カード未設定'}払い</div></div>
-      <div class="ra cardc">${yen(s.amount)}</div></div>`;
+      <div class="ra cardc">${yen(amountAt(s, mk))}</div></div>`;
   }).join('');
-  const subTotal = S.subs.reduce((a, s) => a + (s.freq === 'yearly' ? s.amount / 12 : Number(s.amount)), 0);
-  v.innerHTML = `
+  const subTotal = S.subs.reduce((a, s) => a + (s.freq === 'yearly' ? amountAt(s, mk) / 12 : amountAt(s, mk)), 0);
+  const planRow = p => `<div class="row" data-act="editPlan" data-id="${p.id}">
+      <div><div class="rn">${esc(p.name)}</div><div class="rm">${fmtD(p.date)}・${esc(payName(p))}${p.inBudget ? '' : '・予算外'}</div></div>
+      <div class="ra out">${yen(p.amount)}</div></div>`;
+  const plans = S.planned.slice().sort((a, b) => a.date < b.date ? -1 : 1);
+  const upcoming = plans.filter(p => p.date >= C.T), past = plans.filter(p => p.date < C.T).reverse();
+  $('#view').innerHTML = `
+    <div class="sec-head"><h3>出費予定</h3><button class="btn small" data-act="addPlan">追加</button></div>
+    ${upcoming.map(planRow).join('') || '<p class="hint">これから出ていくお金を前もって入れておく。予算内にすると、その月に使える額から差し引く。</p>'}
+    ${past.length ? `<details><summary>過ぎた出費予定（${past.length}件）</summary><div style="margin-top:8px">${past.map(planRow).join('')}</div></details>` : ''}
     <div class="sec-head"><h3>収入</h3><button class="btn small" data-act="addFlow" data-kind="in">追加</button></div>
-    ${ins.map(row).join('') || '<p class="hint">仕送り・バイト代などを登録する。毎月同じ額なら「毎月固定」、額が変わるなら「毎月変動」。</p>'}
+    ${ins.map(row).join('') || '<p class="hint">給与・仕送りなどを登録する。毎月同じ額なら「毎月固定」、額が変わるなら「毎月変動」。</p>'}
     <div class="sec-head"><h3>口座からの支出</h3><button class="btn small" data-act="addFlow" data-kind="out">追加</button></div>
     ${outs.map(row).join('') || '<p class="hint">家賃など、カードを通さず口座から直接出ていくものだけを登録する。カード払いのものはここに入れない。</p>'}
     <div class="sec-head"><h3>サブスク（カード払い）</h3><button class="btn small" data-act="addSub">追加</button></div>
-    ${subs || '<p class="hint">カード払いのサブスク。口座からは別に引かず、カードの引落額の内訳として扱う。</p>'}
+    ${subs || '<p class="hint">カード払いのサブスク。予算とは別枠で、カードの引落額の内訳として扱う。</p>'}
     ${S.subs.length ? `<p class="hint">月あたり合計 <span class="num">${yen(subTotal)}</span>（年払いは12で割って換算）</p>` : ''}`;
 }
 
@@ -589,12 +961,12 @@ function renderSettings() {
     <p class="hint">データはこの端末のブラウザの中にだけ保存されている。Safariの履歴やデータを消すと一緒に消えるので、ときどき書き出しておく。</p>
     <div class="sheet-actions"><button class="btn" data-act="export">書き出す</button><button class="btn" data-act="import">読み込む</button></div>
     <h3>計算のきまり</h3>
-    <p class="hint">・カードの引落日が土日なら翌月曜として計算する。祝日はずらさない。<br>
-    ・同じ日に入金と出金がある場合、先に出金を引いた残高で警告を判定する。<br>
-    ・カードは「限度額−利用可能額」を未引落の利用総額とみなす。締め日をまたいだ入力では、前回入力とのあいだの利用を日数で按分して締め分を自動推定する。締め日当日に入力すれば推定は不要になる。<br>
-    ・確定額を入れた締めは、その額を優先する。<br>
-    ・最後の入力より後の利用は「想定利用額/日」とサブスクで見積もる。<br>
-    ・収入・口座からの支出は、土日でも登録した日付のまま計算する。</p>
+    <p class="hint">・予算は変動費（カードの日常利用と、予算内の出費予定）が対象。家賃などの固定費とサブスクは別に引く。<br>
+    ・使った額は、各カードの利用可能額の変化から出す。サブスクと予算外の出費予定の分は差し引く。月をまたぐ分は前後の入力から日数で按分する。<br>
+    ・残りの予算は、まだ記録のない日に均等に割り振る。各日は「締め日を直近で過ぎたカード」で払う想定（締め日当日はまだ前のカード）。同じ締め日のカードが複数あれば等分する。<br>
+    ・カードの引落日が土日・祝日・年末年始（12月31日〜1月3日）なら次の平日として計算する。祝日は祝日法の規則から計算していて、春分・秋分の日は計算式による推定。<br>
+    ・カードは「入力した時点の限度額−利用可能額」を未引落の利用総額とみなす。締め日をまたいだ入力では、前回入力とのあいだの利用を日数で按分して締め分を推定する。確定額や自分の推定を入れた締めは、その額を優先する。<br>
+    ・同じ日に入金と出金がある場合、先に出金を引いた残高で警告を判定する。</p>
     <div class="sheet-actions" style="margin-top:32px"><button class="btn danger" data-act="reset">すべてのデータを削除</button></div>`;
 }
 
@@ -607,53 +979,118 @@ function openSheet(title, html, mount) {
 function closeSheet() { document.body.classList.remove('sheet-open'); }
 $('#sheetClose').onclick = closeSheet; $('#sheetBg').onclick = closeSheet;
 const dayOpts = sel => Array.from({ length: 31 }, (_, i) => i + 1).map(d => `<option value="${d}" ${Number(sel) === d ? 'selected' : ''}>${d === 31 ? '末日' : d + '日'}</option>`).join('');
-const val = id => document.getElementById(id).value;
+const seg = (name, opts, cur) => `<div class="seg">${opts.map(([v, l]) => `<label><input type="radio" name="${name}" value="${v}" ${String(cur) === String(v) ? 'checked' : ''}>${l}</label>`).join('')}</div>`;
+const fail = msg => { alert(msg); return false; };
 
 function bankSheet() {
   openSheet('口座残高', `
     <div class="two">
-      <div class="f"><label for="bd">日付</label><input id="bd" type="date" value="${today()}"></div>
-      <div class="f"><label for="ba">残高</label><input id="ba" inputmode="numeric" value="${S.bank ? S.bank.amount : ''}" placeholder="例 132400"></div>
+      <div class="f"><label for="bd">日付</label><input id="bd" type="date" value="${today()}" max="${today()}"></div>
+      <div class="f"><label for="ba">残高</label><input id="ba" inputmode="numeric" value="${S.bank ? S.bank.amount : ''}" placeholder="例 150000"></div>
     </div>
     <p class="hint">その日の引落し・入金が反映された後の残高を入れる。</p>
     <div class="sheet-actions"><button class="btn primary" id="ok">保存</button></div>`, () => {
     $('#ok').onclick = () => {
-      const a = num(val('ba')); if (!val('bd') || isNaN(a)) return alert('日付と残高を入れる');
-      S.bank = { date: val('bd'), amount: a }; save(); closeSheet(); render();
+      const a = num(val('ba')), d = val('bd');
+      if (!isISO(d) || isNaN(a)) return fail('日付と残高を入れる');
+      if (d > today()) return fail('未来の日付は入れられない');
+      S.bank = { date: d, amount: a }; commit();
     };
   });
 }
 
+function budgetSheet() {
+  const mk = ymOf(today());
+  const months = Array.from({ length: 8 }, (_, i) => addMonths(mk, i - 2));
+  const o = S.budget.overrides;
+  openSheet('使う金額（予算）', `
+    <div class="f"><label for="bb">毎月の予算</label><input id="bb" inputmode="numeric" value="${S.budget.base ?? ''}" placeholder="例 60000"></div>
+    <p class="hint">カードの日常利用と、予算内の出費予定が対象。家賃などの固定費とサブスクは含めない。</p>
+    <details ${months.some(k => o[k] != null) ? 'open' : ''}><summary>月ごとに変える</summary>
+      ${months.map(k => `<div class="f"><label>${fmtYM(k)}${k === mk ? '（今月）' : ''}</label><input class="bo" data-k="${k}" inputmode="numeric" value="${o[k] ?? ''}" placeholder="毎月の予算と同じ"></div>`).join('')}
+    </details>
+    <div class="sheet-actions"><button class="btn primary" id="ok">保存</button></div>`, body => {
+    $('#ok').onclick = () => {
+      const t = val('bb').trim(); const b = num(t);
+      if (t !== '' && (isNaN(b) || b < 0)) return fail('毎月の予算は0以上の数字で入れる');
+      const next = {};
+      for (const i of body.querySelectorAll('.bo')) {
+        const x = i.value.trim(); if (x === '') continue;
+        const a = num(x); if (isNaN(a) || a < 0) return fail(`${fmtYM(i.dataset.k)}の予算は0以上の数字で入れる`);
+        next[i.dataset.k] = a;
+      }
+      S.budget.base = t === '' ? null : b;
+      for (const k of months) delete S.budget.overrides[k];
+      Object.assign(S.budget.overrides, next);
+      commit();
+    };
+  });
+}
+
+function planSheet(plan) {
+  const p = plan || { name: '', date: today(), amount: '', pay: (C0 => (C0[0] ? C0[0].id : 'bank'))(activeOn(S, today())), inBudget: true };
+  const payOpts = [['bank', '口座・現金'], ...S.cards.map(c => [c.id, c.name])];
+  openSheet(plan ? '出費予定を編集' : '出費予定を追加', `
+    <div class="f"><label for="pn">名前</label><input id="pn" value="${esc(p.name)}" placeholder="例 旅行の交通費"></div>
+    <div class="two">
+      <div class="f"><label for="pd">日付</label><input id="pd" type="date" value="${p.date}"></div>
+      <div class="f"><label for="pa">金額</label><input id="pa" inputmode="numeric" value="${p.amount}"></div>
+    </div>
+    <div class="f"><label for="pp">払い方</label><select id="pp">${payOpts.map(([v, l]) => `<option value="${v}" ${payTarget(S, p) === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
+    <div class="f"><span class="flabel">予算</span>${seg('pb', [['1', '予算内'], ['0', '予算外（特別な出費）']], p.inBudget ? '1' : '0')}</div>
+    <p class="hint">予算内にすると、その月に使える額から差し引く。カード払いは、その日より後に利用可能額を入れた時点で入力に含まれたとみなす。過去の日付で入れると、カード以外で使った分の記録にもなる。</p>
+    <div class="sheet-actions">${plan ? '<button class="btn danger" id="del">削除</button>' : ''}<button class="btn primary" id="ok">保存</button></div>`, () => {
+    $('#ok').onclick = () => {
+      const name = val('pn').trim(), amount = num(val('pa')), date = val('pd');
+      if (!name || isNaN(amount) || amount <= 0 || !isISO(date)) return fail('名前・日付・金額（1円以上）を入れる');
+      const data = { name, date, amount, pay: val('pp'), inBudget: radio('pb') === '1' };
+      if (plan) Object.assign(plan, data); else S.planned.push({ id: uid(), ...data });
+      commit();
+    };
+    if (plan) $('#del').onclick = () => { if (confirm(`${plan.name} を削除する`)) { S.planned = S.planned.filter(x => x !== plan); commit(); } };
+  });
+}
+
 function cardSheet(card) {
-  const c = card || { name: '', limit: '', closeDay: 15, payDay: 10, payOffset: 1, dailyEst: 0, confirmAfter: 15 };
+  const c = card || { name: '', limit: '', closeDay: 15, payDay: 10, payOffset: 1, confirmAfter: 15, daily: true };
   openSheet(card ? 'カードを編集' : 'カードを追加', `
-    <div class="f"><label for="cn">名前</label><input id="cn" value="${esc(c.name)}" placeholder="例 楽天"></div>
-    <div class="f"><label for="cl">限度額（ショッピング枠）</label><input id="cl" inputmode="numeric" value="${c.limit}"></div>
+    <div class="f"><label for="cn">名前</label><input id="cn" value="${esc(c.name)}" placeholder="例 メインカード"></div>
+    <div class="f"><label for="cl">限度額（ショッピング枠）</label><input id="cl" inputmode="numeric" value="${c.limit}" placeholder="例 300000"></div>
     <div class="two">
       <div class="f"><label for="cc">締め日</label><select id="cc">${dayOpts(c.closeDay)}</select></div>
       <div class="f"><label for="cp">引落日</label><select id="cp">${dayOpts(c.payDay)}</select></div>
     </div>
-    <div class="f"><span class="flabel">引落しは締め日の</span>
-      <div class="seg"><label><input type="radio" name="po" value="1" ${Number(c.payOffset) !== 2 ? 'checked' : ''}>翌月</label><label><input type="radio" name="po" value="2" ${Number(c.payOffset) === 2 ? 'checked' : ''}>翌々月</label></div></div>
-    <div class="f"><label for="ce">1日あたりの想定利用額（任意）</label><input id="ce" inputmode="numeric" value="${c.dailyEst || ''}" placeholder="0"></div>
-    <p class="hint">最後に入力した日より後の利用を見積もるのに使う。0にすると、入力済みの額とサブスクだけで計算する。</p>
+    <div class="f"><span class="flabel">引落しは締め日の</span>${seg('po', [['1', '翌月'], ['2', '翌々月']], Number(c.payOffset) === 2 ? '2' : '1')}</div>
+    <div class="f"><span class="flabel">日常の支払い</span>${seg('cdl', [['1', '使う'], ['0', '使わない']], c.daily !== false ? '1' : '0')}</div>
+    <p class="hint">「使う」にしたカードは、締め日を過ぎたカードから順に使う前提で、予算を日割りで振り分ける。サブスク専用などは「使わない」。</p>
     <div class="f"><label for="ca">確定額を聞き始めるのは締め日の何日後か</label><input id="ca" inputmode="numeric" value="${c.confirmAfter ?? 15}"></div>
     <p class="hint">引落日の前日より遅くはならない。</p>
     <div class="sheet-actions">${card ? '<button class="btn danger" id="del">削除</button>' : ''}<button class="btn primary" id="ok">保存</button></div>`, () => {
     $('#ok').onclick = () => {
       const name = val('cn').trim(), limit = num(val('cl'));
-      if (!name || isNaN(limit)) return alert('名前と限度額を入れる');
+      if (!name || isNaN(limit) || limit <= 0) return fail('名前と限度額（1円以上）を入れる');
+      const ca = num(val('ca'));
       const data = { name, limit, closeDay: Number(val('cc')), payDay: Number(val('cp')),
-        payOffset: Number(document.querySelector('input[name=po]:checked').value), dailyEst: num(val('ce')) || 0,
-        confirmAfter: isNaN(num(val('ca'))) ? 15 : num(val('ca')) };
-      if (card) Object.assign(card, data); else S.cards.push({ id: uid(), snaps: [], bills: {}, ...data });
-      save(); closeSheet(); render();
+        payOffset: Number(radio('po')), daily: radio('cdl') === '1', confirmAfter: isNaN(ca) || ca < 0 ? 15 : ca };
+      if (card) {
+        if (Number(card.closeDay) !== data.closeDay || Number(card.payOffset) !== data.payOffset || Number(card.payDay) !== data.payDay) {
+          const r = remapBills(card, { ...card, ...data });
+          if (r.dropped.length && !confirm(`締め日・引落日の変更で、入力済みの締め分の金額 ${r.dropped.length}件が新しい設定に合わなくなる。合わない分は自動推定に戻る。保存する？`)) return;
+          card.bills = r.bills;
+        }
+        Object.assign(card, data);
+      } else S.cards.push({ id: uid(), snaps: [], bills: {}, ...data });
+      commit();
     };
     if (card) $('#del').onclick = () => {
-      const n = S.subs.filter(s => s.cardId === card.id).length;
-      if (!confirm(`${card.name} を削除する。入力履歴${n ? `と、このカードで払っているサブスク${n}件` : ''}も消える。`)) return;
-      S.cards = S.cards.filter(x => x !== card); S.subs = S.subs.filter(s => s.cardId !== card.id);
-      save(); closeSheet(); render();
+      const ns = S.subs.filter(s => s.cardId === card.id).length;
+      const np = S.planned.filter(p => p.pay === card.id).length;
+      const extra = [ns ? `このカードで払うサブスク${ns}件` : '', np ? `このカードで払う出費予定${np}件` : ''].filter(Boolean).join('と');
+      if (!confirm(`${card.name} を削除する。入力の履歴${extra ? `と、${extra}` : ''}も消える。`)) return;
+      S.cards = S.cards.filter(x => x !== card);
+      S.subs = S.subs.filter(s => s.cardId !== card.id);
+      S.planned = S.planned.filter(p => p.pay !== card.id);
+      commit();
     };
   });
 }
@@ -661,19 +1098,18 @@ function cardSheet(card) {
 function snapSheet(card) {
   openSheet(`${card.name}の利用可能額`, `
     <div class="two">
-      <div class="f"><label for="sd">確認した日</label><input id="sd" type="date" value="${today()}"></div>
-      <div class="f"><label for="sv">利用可能額</label><input id="sv" inputmode="numeric" placeholder="例 268400"></div>
+      <div class="f"><label for="sd">確認した日</label><input id="sd" type="date" value="${today()}" max="${today()}"></div>
+      <div class="f"><label for="sv">利用可能額</label><input id="sv" inputmode="numeric" placeholder="例 250000"></div>
     </div>
     <div id="extra"></div>
     <div class="preview" id="pv"></div>
     <div class="sheet-actions"><button class="btn primary" id="ok">保存</button></div>`, body => {
     const prevOf = D => { const xs = (card.snaps || []).filter(x => x.date < D); return xs.length ? xs[xs.length - 1] : null; };
-    const tempSnap = () => { const v = num(val('sv')); return (val('sv').trim() === '' || isNaN(v)) ? null : { date: val('sd'), available: v }; };
+    const tempSnap = () => { const v = num(val('sv')); return isNaN(v) || !isISO(val('sd')) ? null : { date: val('sd'), available: v, limit: Number(card.limit) }; };
     const drawExtra = () => {
-      const D = val('sd'); if (!D) return;
+      const D = val('sd'); if (!isISO(D)) return;
       const prev = prevOf(D); const own = card.bills || {};
       const open = unpaidClosings(card, D).filter(c => !own[c]);
-      // 確定額の時期に入っている締め → 確定額（任意）。まだなら、締め日をまたいだ分だけ推定額（任意）
       const conf = pendingConfirms(card, D, own);
       const est = open.filter(c => !conf.includes(c) && (!prev || prev.date < c));
       let h = '';
@@ -689,7 +1125,7 @@ function snapSheet(card) {
       body.querySelectorAll('.ex').forEach(i => i.oninput = () => { i.dataset.touched = '1'; preview(); });
       update();
     };
-    const update = () => { // 推定欄に自動推定値を入れる（触っていない欄だけ）
+    const update = () => {
       const t = tempSnap(); const bills = deriveBills(card, t);
       body.querySelectorAll('.ex').forEach(i => {
         const b = bills[i.dataset.c];
@@ -712,18 +1148,20 @@ function snapSheet(card) {
       const fake = { ...card, bills: { ...(card.bills || {}), ...collect() } };
       const bills = deriveBills(fake, t); const st = stateAt(fake, t, bills); const prev = prevOf(t.date);
       let txt = `利用総額 ${yen(st.U)}` + (st.closed.length ? `（締め分 ${yen(st.closed.reduce((x, o) => x + o.amount, 0))}／締め後 ${yen(st.unconf)}）` : '') + '。';
-      if (prev) { const u = usageBetween(fake, prev, t, bills); txt += `前回（${fmtD(prev.date)}）から ${u >= 0 ? '+' : ''}${yen(u)}。`; }
-      pv.className = st.neg ? 'preview bad' : 'preview';
+      if (prev) txt += `前回（${fmtD(prev.date)}）から ${syen(usageBetween(fake, prev, t, bills))}。`;
+      if (t.available > card.limit) txt += ' 利用可能額が限度額より大きい。限度額の設定を確認する。';
+      pv.className = st.neg || t.available > card.limit ? 'preview bad' : 'preview';
       pv.textContent = st.neg ? txt + ' 締め分が利用総額を上回っている。枠の戻りがまだか、締め分の金額が大きすぎる可能性がある。' : txt;
     };
     $('#sd').onchange = drawExtra; $('#sv').oninput = update;
     drawExtra();
     $('#ok').onclick = () => {
-      const t = tempSnap(); if (!t || !t.date) return alert('利用可能額を入れる');
+      const t = tempSnap(); if (!t) return fail('日付と利用可能額を入れる');
+      if (t.date > today()) return fail('未来の日付は入れられない');
       card.bills = { ...(card.bills || {}), ...collect() };
       card.snaps = (card.snaps || []).filter(x => x.date !== t.date); card.snaps.push(t);
       card.snaps.sort((a, b) => a.date < b.date ? -1 : 1);
-      save(); closeSheet(); render();
+      commit();
     };
   });
 }
@@ -733,103 +1171,120 @@ function billSheet(card, c) {
   const confDefault = today() >= askFrom(card, c) || (cur && cur.kind === 'confirmed');
   openSheet(`${fmtD(c)}締めの金額`, `
     <p class="hint">${fmtD(paymentFor(card, c))}に引き落とされる分。今は ${cur ? `${kindLabel(cur.kind)} ${yen(cur.amount)}` : '未設定'}。</p>
-    <div class="f"><span class="flabel">種類</span><div class="seg">
-      <label><input type="radio" name="bk" value="confirmed" ${confDefault ? 'checked' : ''}>確定額</label>
-      <label><input type="radio" name="bk" value="estimate" ${confDefault ? '' : 'checked'}>自分の推定</label></div></div>
+    <div class="f"><span class="flabel">種類</span>${seg('bk', [['confirmed', '確定額'], ['estimate', '自分の推定']], confDefault ? 'confirmed' : 'estimate')}</div>
     <div class="f"><label for="bv">金額</label><input id="bv" inputmode="numeric" value="${cur && cur.kind !== 'auto' ? cur.amount : ''}" placeholder="${cur ? cur.amount : ''}"></div>
     <div class="sheet-actions">${card.bills && card.bills[c] ? '<button class="btn" id="auto">自動推定に戻す</button>' : ''}<button class="btn primary" id="ok">保存</button></div>`, () => {
     $('#ok').onclick = () => {
-      const a = num(val('bv')); if (val('bv').trim() === '' || isNaN(a)) return alert('金額を入れる');
-      card.bills = card.bills || {}; card.bills[c] = { amount: a, kind: document.querySelector('input[name=bk]:checked').value };
-      save(); closeSheet(); render();
+      const a = num(val('bv')); if (isNaN(a) || a < 0) return fail('金額を入れる');
+      card.bills = card.bills || {}; card.bills[c] = { amount: a, kind: radio('bk') };
+      commit();
     };
-    if ($('#auto')) $('#auto').onclick = () => { delete card.bills[c]; save(); closeSheet(); render(); };
+    if ($('#auto')) $('#auto').onclick = () => { delete card.bills[c]; commit(); };
   });
 }
 
+// 既存の項目の金額を変えるとき、過去の月に波及させるかを選ぶ
+const whenSeg = `<div class="f" id="whenF" style="display:none"><span class="flabel">金額の変更を反映する月</span>${seg('when', [['now', '今月から'], ['all', '過去の月も含めて']], 'now')}
+  <p class="hint">値上げなどは「今月から」。入力ミスの修正は「過去の月も含めて」。</p></div>`;
+
 function flowSheet(flow, kind) {
-  const f = flow || { name: '', kind: kind || 'in', freq: 'fixed', day: 25, amount: '', date: today() };
+  const mk = ymOf(today());
+  const f = flow || { name: '', kind: kind || 'in', freq: 'fixed', day: 25, amount: '', date: today(), shift: 'keep' };
+  const curAmt = flow && flow.freq !== 'once' ? amountAt(flow, mk) : f.amount;
   openSheet(flow ? '編集' : (f.kind === 'in' ? '収入を追加' : '支出を追加'), `
-    <div class="f"><label for="fn">名前</label><input id="fn" value="${esc(f.name)}" placeholder="${f.kind === 'in' ? '例 仕送りA' : '例 家賃'}"></div>
-    <div class="f"><span class="flabel">種類</span><div class="seg">
-      <label><input type="radio" name="fk" value="in" ${f.kind === 'in' ? 'checked' : ''}>収入</label>
-      <label><input type="radio" name="fk" value="out" ${f.kind === 'out' ? 'checked' : ''}>口座からの支出</label></div></div>
-    <div class="f"><span class="flabel">頻度</span><div class="seg">
-      <label><input type="radio" name="ff" value="fixed" ${f.freq === 'fixed' ? 'checked' : ''}>毎月固定</label>
-      <label><input type="radio" name="ff" value="variable" ${f.freq === 'variable' ? 'checked' : ''}>毎月変動</label>
-      <label><input type="radio" name="ff" value="once" ${f.freq === 'once' ? 'checked' : ''}>1回のみ</label></div></div>
+    <div class="f"><label for="fn">名前</label><input id="fn" value="${esc(f.name)}" placeholder="${f.kind === 'in' ? '例 給与' : '例 家賃'}"></div>
+    <div class="f"><span class="flabel">種類</span>${seg('fk', [['in', '収入'], ['out', '口座からの支出']], f.kind === 'in' ? 'in' : 'out')}</div>
+    <div class="f"><span class="flabel">頻度</span>${seg('ff', [['fixed', '毎月固定'], ['variable', '毎月変動'], ['once', '1回のみ']], f.freq)}</div>
     <div class="two">
       <div class="f" id="dayF"><label for="fd">日</label><select id="fd">${dayOpts(f.day)}</select></div>
       <div class="f" id="dateF"><label for="fdt">日付</label><input id="fdt" type="date" value="${f.date || today()}"></div>
-      <div class="f"><label for="fa" id="fal">金額</label><input id="fa" inputmode="numeric" value="${f.amount}"></div>
+      <div class="f"><label for="fa" id="fal">金額</label><input id="fa" inputmode="numeric" value="${curAmt}"></div>
     </div>
+    <div class="f"><label for="fs">土日・祝日のとき</label><select id="fs">
+      <option value="keep" ${f.shift === 'keep' || !f.shift ? 'selected' : ''}>ずらさない</option>
+      <option value="prev" ${f.shift === 'prev' ? 'selected' : ''}>前の平日</option>
+      <option value="next" ${f.shift === 'next' ? 'selected' : ''}>次の平日</option></select></div>
+    ${flow ? whenSeg : ''}
     <p class="hint" id="fh"></p>
     <div class="sheet-actions">${flow ? '<button class="btn danger" id="del">削除</button>' : ''}<button class="btn primary" id="ok">保存</button></div>`, () => {
     const sync = () => {
-      const fr = document.querySelector('input[name=ff]:checked').value;
+      const fr = radio('ff');
       $('#dayF').style.display = fr === 'once' ? 'none' : ''; $('#dateF').style.display = fr === 'once' ? '' : 'none';
       $('#fal').textContent = fr === 'variable' ? '見込み額' : '金額';
       $('#fh').textContent = fr === 'variable' ? '実際の額が分かった月は、一覧の「月ごとの実額」から上書きする。上書きしていない月は見込み額で計算する。' : '';
+      if ($('#whenF')) $('#whenF').style.display = fr !== 'once' && flow.freq !== 'once' && num(val('fa')) !== curAmt ? '' : 'none';
     };
-    document.querySelectorAll('input[name=ff]').forEach(i => i.onchange = sync); sync();
+    document.querySelectorAll('input[name=ff]').forEach(i => i.onchange = sync); $('#fa').oninput = sync; sync();
     $('#ok').onclick = () => {
-      const fr = document.querySelector('input[name=ff]:checked').value;
-      const name = val('fn').trim(), amount = num(val('fa'));
-      if (!name || isNaN(amount)) return alert('名前と金額を入れる');
-      const data = { name, amount, kind: document.querySelector('input[name=fk]:checked').value, freq: fr,
-        day: Number(val('fd')), date: fr === 'once' ? val('fdt') : null };
-      if (flow) Object.assign(flow, data); else S.flows.push({ id: uid(), overrides: {}, ...data });
-      save(); closeSheet(); render();
+      const fr = radio('ff'); const name = val('fn').trim(), amount = num(val('fa'));
+      if (!name || isNaN(amount) || amount < 0) return fail('名前と金額を入れる');
+      if (fr === 'once' && !isISO(val('fdt'))) return fail('日付を入れる');
+      const data = { name, kind: radio('fk'), freq: fr, day: Number(val('fd')), date: fr === 'once' ? val('fdt') : null, shift: val('fs') };
+      if (flow) {
+        const wasRecurring = flow.freq !== 'once';
+        Object.assign(flow, data);
+        if (fr === 'once' || !wasRecurring) { flow.amount = amount; flow.amountFrom = {}; }
+        else setAmount(flow, amount, radio('when') === 'all' ? null : mk);
+      } else S.flows.push({ id: uid(), overrides: {}, amountFrom: {}, amount, ...data });
+      commit();
     };
-    if (flow) $('#del').onclick = () => { if (confirm(`${flow.name} を削除する`)) { S.flows = S.flows.filter(x => x !== flow); save(); closeSheet(); render(); } };
+    if (flow) $('#del').onclick = () => { if (confirm(`${flow.name} を削除する。過去の月の収支からも消える。`)) { S.flows = S.flows.filter(x => x !== flow); commit(); } };
   });
 }
 
 function overrideSheet(flow) {
-  const base = parse(S.bank ? S.bank.date : today());
-  const months = Array.from({ length: 7 }, (_, i) => ymOf(isoOf(new Date(base.getFullYear(), base.getMonth() + i, 1))));
+  const mk = ymOf(today());
+  const months = Array.from({ length: 9 }, (_, i) => addMonths(mk, i - 2));
   flow.overrides = flow.overrides || {};
   openSheet(`${flow.name}の実額`, `
-    <p class="hint">空欄の月は見込み額 ${yen(flow.amount)} で計算する。</p>
-    ${months.map(k => `<div class="f"><label>${fmtYM(k)}（${dayLabel(flow.day)}）</label><input class="ov" data-k="${k}" inputmode="numeric" value="${flow.overrides[k] ?? ''}" placeholder="${flow.amount}"></div>`).join('')}
+    <p class="hint">空欄の月は見込み額で計算する。</p>
+    ${months.map(k => `<div class="f"><label>${fmtYM(k)}（${dayLabel(flow.day)}）</label><input class="ov" data-k="${k}" inputmode="numeric" value="${flow.overrides[k] ?? ''}" placeholder="${amountAt(flow, k)}"></div>`).join('')}
     <div class="sheet-actions"><button class="btn primary" id="ok">保存</button></div>`, body => {
     $('#ok').onclick = () => {
+      for (const i of body.querySelectorAll('.ov')) {
+        const x = i.value.trim(); const a = num(x);
+        if (x !== '' && (isNaN(a) || a < 0)) return fail(`${fmtYM(i.dataset.k)}の金額は0以上の数字で入れる`);
+      }
       body.querySelectorAll('.ov').forEach(i => {
-        const a = num(i.value);
-        if (i.value.trim() === '' || isNaN(a)) delete flow.overrides[i.dataset.k]; else flow.overrides[i.dataset.k] = a;
+        const x = i.value.trim(); if (x === '') delete flow.overrides[i.dataset.k]; else flow.overrides[i.dataset.k] = num(x);
       });
-      save(); closeSheet(); render();
+      commit();
     };
   });
 }
 
 function subSheet(sub) {
   if (!S.cards.length) return alert('先にカードタブでカードを登録する');
+  const mk = ymOf(today());
   const s = sub || { name: '', amount: '', cardId: S.cards[0].id, freq: 'monthly', day: 1, month: 1 };
+  const curAmt = sub ? amountAt(sub, mk) : '';
   openSheet(sub ? 'サブスクを編集' : 'サブスクを追加', `
-    <div class="f"><label for="sn">名前</label><input id="sn" value="${esc(s.name)}" placeholder="例 Apple Music"></div>
+    <div class="f"><label for="sn">名前</label><input id="sn" value="${esc(s.name)}" placeholder="例 動画配信サービス"></div>
     <div class="two">
-      <div class="f"><label for="sa">金額</label><input id="sa" inputmode="numeric" value="${s.amount}"></div>
+      <div class="f"><label for="sa">金額</label><input id="sa" inputmode="numeric" value="${curAmt}"></div>
       <div class="f"><label for="sc">支払うカード</label><select id="sc">${S.cards.map(c => `<option value="${c.id}" ${c.id === s.cardId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
     </div>
-    <div class="f"><span class="flabel">頻度</span><div class="seg">
-      <label><input type="radio" name="sf" value="monthly" ${s.freq !== 'yearly' ? 'checked' : ''}>毎月</label>
-      <label><input type="radio" name="sf" value="yearly" ${s.freq === 'yearly' ? 'checked' : ''}>毎年</label></div></div>
+    <div class="f"><span class="flabel">頻度</span>${seg('sf', [['monthly', '毎月'], ['yearly', '毎年']], s.freq === 'yearly' ? 'yearly' : 'monthly')}</div>
     <div class="two">
       <div class="f" id="smF"><label for="smo">月</label><select id="smo">${Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}" ${Number(s.month) === i + 1 ? 'selected' : ''}>${i + 1}月</option>`).join('')}</select></div>
       <div class="f"><label for="sdy">課金日</label><select id="sdy">${dayOpts(s.day)}</select></div>
     </div>
+    ${sub ? whenSeg : ''}
     <div class="sheet-actions">${sub ? '<button class="btn danger" id="del">削除</button>' : ''}<button class="btn primary" id="ok">保存</button></div>`, () => {
-    const sync = () => { $('#smF').style.display = document.querySelector('input[name=sf]:checked').value === 'yearly' ? '' : 'none'; };
-    document.querySelectorAll('input[name=sf]').forEach(i => i.onchange = sync); sync();
+    const sync = () => {
+      $('#smF').style.display = radio('sf') === 'yearly' ? '' : 'none';
+      if ($('#whenF')) $('#whenF').style.display = num(val('sa')) !== curAmt ? '' : 'none';
+    };
+    document.querySelectorAll('input[name=sf]').forEach(i => i.onchange = sync); $('#sa').oninput = sync; sync();
     $('#ok').onclick = () => {
       const name = val('sn').trim(), amount = num(val('sa'));
-      if (!name || isNaN(amount)) return alert('名前と金額を入れる');
-      const data = { name, amount, cardId: val('sc'), freq: document.querySelector('input[name=sf]:checked').value, day: Number(val('sdy')), month: Number(val('smo')) };
-      if (sub) Object.assign(sub, data); else S.subs.push({ id: uid(), ...data });
-      save(); closeSheet(); render();
+      if (!name || isNaN(amount) || amount < 0) return fail('名前と金額を入れる');
+      const data = { name, cardId: val('sc'), freq: radio('sf'), day: Number(val('sdy')), month: Number(val('smo')) };
+      if (sub) { Object.assign(sub, data); setAmount(sub, amount, radio('when') === 'all' ? null : mk); }
+      else S.subs.push({ id: uid(), amount, amountFrom: {}, ...data });
+      commit();
     };
-    if (sub) $('#del').onclick = () => { if (confirm(`${sub.name} を削除する`)) { S.subs = S.subs.filter(x => x !== sub); save(); closeSheet(); render(); } };
+    if (sub) $('#del').onclick = () => { if (confirm(`${sub.name} を削除する。過去の月の収支からも消える。`)) { S.subs = S.subs.filter(x => x !== sub); commit(); } };
   });
 }
 
@@ -847,15 +1302,15 @@ function exportSheet() {
 }
 function importSheet() {
   openSheet('読み込む', `
-    <p class="hint">書き出したデータを貼り付ける。今のデータは置き換わる。</p>
+    <p class="hint">書き出したデータを貼り付ける。今のデータは置き換わる（置き換える前のデータはブラウザ内に別名で残す）。</p>
     <div class="f"><textarea id="im" placeholder="{ ... }"></textarea></div>
     <div class="sheet-actions"><button class="btn primary" id="ok">読み込む</button></div>`, () => {
     $('#ok').onclick = () => {
-      try {
-        const d = JSON.parse(val('im'));
-        if (!Array.isArray(d.cards) || !Array.isArray(d.flows) || !Array.isArray(d.subs)) throw 0;
-        S = migrate(Object.assign(defaultState(), d)); save(); closeSheet(); tab = 'home'; render();
-      } catch (e) { alert('形式が違う。書き出した内容をそのまま貼り付ける。'); }
+      let d;
+      try { d = JSON.parse(val('im')); if (!d || !Array.isArray(d.cards) || !Array.isArray(d.flows) || !Array.isArray(d.subs)) throw 0; }
+      catch (e) { return fail('形式が違う。書き出した内容をそのまま貼り付ける。'); }
+      try { localStorage.setItem(KEY + '-before-import-' + Date.now(), JSON.stringify(S)); } catch (_) {}
+      S = migrate(d, today()); tab = 'home'; save(); closeSheet(); render();
     };
   });
 }
@@ -864,10 +1319,13 @@ function importSheet() {
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-tab],[data-act],[data-range]'); if (!t) return;
   if (t.dataset.tab) { tab = t.dataset.tab; render(); return; }
-  if (t.dataset.range) { S.horizon = Number(t.dataset.range); save(); render(); return; }
+  if (t.dataset.range) { S.horizon = Number(t.dataset.range); save(); render(true); return; }
   const id = t.dataset.id;
   switch (t.dataset.act) {
     case 'bank': bankSheet(); break;
+    case 'budget': budgetSheet(); break;
+    case 'addPlan': planSheet(null); break;
+    case 'editPlan': planSheet(S.planned.find(p => p.id === id)); break;
     case 'addCard': cardSheet(null); break;
     case 'editCard': cardSheet(S.cards.find(c => c.id === id)); break;
     case 'snap': snapSheet(S.cards.find(c => c.id === id)); break;
@@ -875,7 +1333,7 @@ document.addEventListener('click', e => {
     case 'delSnap': {
       e.stopPropagation();
       const c = S.cards.find(c => c.id === id);
-      if (confirm(`${fmtD(t.dataset.date)}の入力を削除する`)) { c.snaps = c.snaps.filter(s => s.date !== t.dataset.date); save(); render(); }
+      if (confirm(`${fmtD(t.dataset.date)}の入力を削除する`)) { c.snaps = c.snaps.filter(s => s.date !== t.dataset.date); save(); render(true); }
       break;
     }
     case 'addFlow': flowSheet(null, t.dataset.kind); break;
@@ -886,7 +1344,7 @@ document.addEventListener('click', e => {
     case 'saveSafe': { const a = num(val('safe')); if (isNaN(a)) return alert('数字を入れる'); S.safeLine = a; save(); alert('保存した'); break; }
     case 'export': exportSheet(); break;
     case 'import': importSheet(); break;
-    case 'reset': if (confirm('すべてのデータを削除する。元に戻せない。')) { S = defaultState(); save(); tab = 'home'; render(); } break;
+    case 'reset': if (confirm('すべてのデータを削除する。元に戻せない。')) { S = migrate(null, today()); save(); tab = 'home'; render(); } break;
   }
 });
 
