@@ -34,6 +34,8 @@
   .num { font-family: var(--num); font-variant-numeric: tabular-nums; }
   header.top { padding: 14px 0 6px; }
   header.top h1 { font-size: 20px; font-weight: 700; letter-spacing: .02em; }
+  header.top .wrap { display: flex; justify-content: space-between; align-items: baseline; }
+  #todayLbl { font-size: 12.5px; color: var(--muted); }
   h3 { font-size: 14px; color: var(--muted); font-weight: 600; margin: 22px 0 8px; }
 
   .btn { font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--surface-2); color: var(--text);
@@ -176,7 +178,7 @@
 </style>
 </head>
 <body>
-<header class="top"><div class="wrap"><h1 id="pageTitle">見通し</h1></div></header>
+<header class="top"><div class="wrap"><h1 id="pageTitle">見通し</h1><span id="todayLbl"></span></div></header>
 <main class="wrap" id="view"></main>
 
 <nav class="tabs">
@@ -653,9 +655,12 @@ const radio = name => (document.querySelector(`input[name=${name}]:checked`) || 
 /* ================= 画面 ================= */
 let tab = 'home';
 const titles = { home: '見通し', months: '月ごと', cards: 'カード', flows: '収支', settings: '設定' };
+let lastDay = null, pendingRefresh = false;
 function render(keepScroll) {
   const y = window.scrollY;
+  lastDay = today();
   $('#pageTitle').textContent = titles[tab];
+  $('#todayLbl').textContent = fmtD(lastDay) + '時点';
   document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   const C = compute(S, today());
   ({ home: renderHome, months: renderMonths, cards: renderCards, flows: renderFlows, settings: renderSettings })[tab](C);
@@ -987,7 +992,28 @@ function openSheet(title, html, mount) {
   document.body.classList.add('sheet-open'); $('#sheet').scrollTop = 0;
   if (mount) mount($('#sheetBody'));
 }
-function closeSheet() { document.body.classList.remove('sheet-open'); }
+function closeSheet() {
+  document.body.classList.remove('sheet-open');
+  if (pendingRefresh) setTimeout(refresh, 0);
+}
+/* 日付が変わったとき・アプリに戻ってきたとき・別のタブで変更されたときに、今日の日付で計算し直す。
+   iPhoneのホーム画面アプリは、開き直しても前の画面をそのまま見せることがあるため。
+   入力画面を開いている間は、入力中の内容を消さないよう、閉じてから計算し直す。 */
+const sheetOpen = () => document.body.classList.contains('sheet-open');
+function refresh() {
+  if (sheetOpen()) { pendingRefresh = true; return; }
+  pendingRefresh = false;
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (raw && raw !== JSON.stringify(S)) S = migrate(JSON.parse(raw), today());
+  } catch (e) { /* 読めなければ今のデータのまま */ }
+  render(true);
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refresh(); });
+window.addEventListener('pageshow', e => { if (e.persisted) refresh(); });
+window.addEventListener('focus', () => { if (today() !== lastDay) refresh(); });
+window.addEventListener('storage', e => { if (e.key === KEY) refresh(); });
+setInterval(() => { if (today() !== lastDay) refresh(); }, 30000);
 $('#sheetClose').onclick = closeSheet; $('#sheetBg').onclick = closeSheet;
 const dayOpts = sel => Array.from({ length: 31 }, (_, i) => i + 1).map(d => `<option value="${d}" ${Number(sel) === d ? 'selected' : ''}>${d === 31 ? '末日' : d + '日'}</option>`).join('');
 const seg = (name, opts, cur) => `<div class="seg">${opts.map(([v, l]) => `<label><input type="radio" name="${name}" value="${v}" ${String(cur) === String(v) ? 'checked' : ''}>${l}</label>`).join('')}</div>`;
