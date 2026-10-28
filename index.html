@@ -292,6 +292,24 @@ function unpaidClosingsIncl(card, D) {
   if (cycleOf(card, D) === D && paymentFor(card, D) > D) out.push(D);
   return out;
 }
+/* 引落日を過ぎても、カード会社の利用可能額にすぐ反映されないことがある。
+   入力のときに「まだ枠が戻っていない」と答えた締めは sn.pending に入れ、その入力では未払いとして扱う。 */
+const pendingOf = (card, sn) => (sn.pending || []).filter(c => c < sn.date && paymentFor(card, c) <= sn.date);
+// その入力の時点で、利用可能額から差し引かれている締め分（未引落＋引落済みだが枠が戻っていない分）
+function owedAt(card, sn) {
+  return [...new Set([...unpaidClosings(card, sn.date), ...pendingOf(card, sn)])].sort();
+}
+// 上に加えて、締め日当日の入力ならその締めも含める
+function owedInclAt(card, sn) {
+  const out = owedAt(card, sn);
+  if (cycleOf(card, sn.date) === sn.date && paymentFor(card, sn.date) > sn.date) out.push(sn.date);
+  return out;
+}
+// a の時点で差し引かれていて、b の時点では戻っている締め（＝その間に払い終わって枠が戻った分）
+function restoredBetween(card, a, b) {
+  const owedB = new Set(owedAt(card, b));
+  return owedInclAt(card, a).filter(c => paymentFor(card, c) <= b.date && !owedB.has(c));
+}
 const latestSnap = card => (card.snaps && card.snaps.length) ? card.snaps[card.snaps.length - 1] : null;
 // 未引落の利用総額 = 入力した時点の限度額 − 利用可能額（限度額を後から変えても過去の記録は変わらない）
 const unpaidOf = (card, sn) => Number(sn.limit != null ? sn.limit : card.limit) - Number(sn.available);
@@ -310,10 +328,10 @@ function deriveBills(card, extraSnap) {
     const a = snaps[i - 1], b = snaps[i];
     const cs = closingsBetween(card, a.date, b.date);
     if (!cs.length) continue;
-    const openAtA = unpaidClosings(card, a.date);
+    const openAtA = owedAt(card, a);
     const unconfA = unpaidOf(card, a) - openAtA.reduce((x, c) => x + amt(c), 0);
-    let paid = 0; for (const c of openAtA) if (paymentFor(card, c) <= b.date) paid += amt(c);
-    if (cycleOf(card, a.date) === a.date && paymentFor(card, a.date) <= b.date) paid += bills[a.date] ? amt(a.date) : unconfA;
+    let paid = 0;
+    for (const c of restoredBetween(card, a, b)) paid += c === a.date && !bills[c] ? unconfA : amt(c);
     const usage = unpaidOf(card, b) - unpaidOf(card, a) + paid;
     const total = Math.max(daysBetween(a.date, b.date), 1);
     cs.forEach((c, k) => {
@@ -325,14 +343,14 @@ function deriveBills(card, extraSnap) {
   return bills;
 }
 function stateAt(card, sn, bills) {
-  const closed = unpaidClosings(card, sn.date).map(c => ({ c, pay: paymentFor(card, c), amount: bills[c] ? Number(bills[c].amount) : 0, kind: bills[c] ? bills[c].kind : 'none' }));
+  const closed = owedAt(card, sn).map(c => ({ c, pay: paymentFor(card, c), amount: bills[c] ? Number(bills[c].amount) : 0, kind: bills[c] ? bills[c].kind : 'none', waiting: paymentFor(card, c) <= sn.date }));
   const U = unpaidOf(card, sn);
   const raw = U - closed.reduce((x, o) => x + o.amount, 0);
   return { closed, U, unconf: Math.max(0, raw), neg: raw < 0 ? raw : 0 };
 }
 function usageBetween(card, a, b, bills) {
   let paid = 0;
-  for (const c of unpaidClosingsIncl(card, a.date)) if (paymentFor(card, c) <= b.date) paid += bills[c] ? Number(bills[c].amount) : 0;
+  for (const c of restoredBetween(card, a, b)) paid += bills[c] ? Number(bills[c].amount) : 0;
   return unpaidOf(card, b) - unpaidOf(card, a) + paid;
 }
 function askFrom(card, c) { const x = addDays(c, Number(card.confirmAfter ?? 15)); const y = addDays(paymentFor(card, c), -1); return x < y ? x : y; }
@@ -595,7 +613,8 @@ function migrate(st, T) {
       const conf = x.confirmed || {};
       for (const [k, v] of Object.entries(conf)) if (!c.bills[k]) c.bills[k] = { amount: Number(v), kind: 'estimate' };
       const lim = x.limit != null ? Number(x.limit) : Number(c.limit);
-      if (x.available != null) return { date: x.date, available: Number(x.available), limit: lim };
+      const pend = Array.isArray(x.pending) ? x.pending.filter(isISO) : [];
+      if (x.available != null) return pend.length ? { date: x.date, available: Number(x.available), limit: lim, pending: pend } : { date: x.date, available: Number(x.available), limit: lim };
       const U = Object.values(conf).reduce((a, b) => a + Number(b), 0) + Number(x.unconfirmed || 0);
       return { date: x.date, available: lim - U, limit: lim };
     }).sort((a, b) => a.date < b.date ? -1 : 1);
@@ -889,7 +908,7 @@ function renderCards(C) {
       const use = prev ? usageBetween(card, prev, s, bills) : null;
       last = `<div class="kv">
         <span class="k">最終入力（${fmtD(s.date)}）</span><span class="v">利用可能 ${yen(s.available)}</span>
-        ${st.closed.map(o => `<span class="k">${fmtD(o.c)}締め・${kindLabel(o.kind)} <button class="btn small ghost" data-act="bill" data-id="${card.id}" data-c="${o.c}">直す</button></span><span class="v">${yen(o.amount)}</span>`).join('')}
+        ${st.closed.map(o => `<span class="k">${fmtD(o.c)}締め・${kindLabel(o.kind)}${o.waiting ? `（${fmtD(o.pay)}引落済み・枠の戻り待ち）` : ''} <button class="btn small ghost" data-act="bill" data-id="${card.id}" data-c="${o.c}">直す</button></span><span class="v">${yen(o.amount)}</span>`).join('')}
         <span class="k">締め後の利用</span><span class="v">${yen(st.unconf)}</span>
         ${use != null ? `<span class="k">前回（${fmtD(prev.date)}）からの利用</span><span class="v">${use < 0 ? `${yen(use)} <span class="tag">返品・反映ずれ?</span>` : '+' + yen(use)}</span>` : ''}
       </div>${st.neg ? `<p class="hint" style="color:var(--card)">締め分の金額が利用総額（限度額−利用可能額）を ${yen(-st.neg)} 上回っている。引落し後の枠の戻りがまだか、締め分の金額が実際より大きい可能性がある。</p>` : ''}`;
@@ -1148,9 +1167,27 @@ function snapSheet(card, edit) {
     <div class="preview" id="pv"></div>
     <div class="sheet-actions">${edit ? '<button class="btn danger" id="del">この入力を削除</button>' : ''}<button class="btn primary" id="ok">保存</button></div>`, body => {
     const prevOf = D => { const xs = others.filter(x => x.date < D); return xs.length ? xs[xs.length - 1] : null; };
+    // 前回の入力のあとに引落日が来た締め（＝枠が戻っているか聞く必要がある分）
+    let cands = [];
+    const payCands = D => {
+      const prev = prevOf(D); const bills = deriveBills(base); const out = [];
+      let c = lastClosingBefore(card, D);
+      for (let i = 0; i < 4; i++, c = prevClosing(card, c)) {
+        const p = paymentFor(card, c);
+        if (p > D) continue;
+        const recent = prev ? (p > prev.date || (prev.pending || []).includes(c)) : daysBetween(p, D) <= 10;
+        const amt = bills[c] ? Number(bills[c].amount) : 0;
+        if (recent && amt > 0) out.push({ c, p, amt });
+      }
+      return out;
+    };
     const tempSnap = () => {
       const v = num(val('sv')), l = num(val('sl'));
-      return isNaN(v) || isNaN(l) || l <= 0 || !isISO(val('sd')) ? null : { date: val('sd'), available: v, limit: l };
+      if (isNaN(v) || isNaN(l) || l <= 0 || !isISO(val('sd'))) return null;
+      const t = { date: val('sd'), available: v, limit: l };
+      const pend = cands.filter(o => radio('pw_' + o.c) === 'wait').map(o => o.c);
+      if (pend.length) t.pending = pend;
+      return t;
     };
     const drawExtra = () => {
       const D = val('sd'); if (!isISO(D)) return;
@@ -1167,12 +1204,34 @@ function snapSheet(card, edit) {
           <label>${fmtD(c)}締めの確定額（${fmtD(paymentFor(card, c))}引落・任意）</label>
           <input class="ex" data-c="${c}" data-kind="confirmed" inputmode="numeric">
           <p class="hint">一度入れたら、この締めの分はもう聞かない。</p></div>`).join('')}</div>`;
+      cands = payCands(D);
+      const editing = edit && edit.date === D;
+      if (cands.length) h += `<div class="conf-box">${cands.map(o => `<div class="f pw" data-c="${o.c}" ${editing ? 'data-touched="1"' : ''} style="margin-top:6px">
+          <span class="flabel">${fmtD(o.p)}の引落し（${fmtD(o.c)}締め ${yen(o.amt)}）の分は、この利用可能額にもう戻っている？</span>
+          ${seg('pw_' + o.c, [['back', '戻っている'], ['wait', 'まだ戻っていない']], editing && (edit.pending || []).includes(o.c) ? 'wait' : 'back')}</div>`).join('')}
+          <p class="hint">引落しのあと、カード会社の利用可能額に反映されるまで数日かかることがある。前回の入力から考えてありそうなほうを選んである。</p></div>`;
       $('#extra').innerHTML = h;
       body.querySelectorAll('.ex').forEach(i => i.oninput = () => { i.dataset.touched = '1'; preview(); });
+      body.querySelectorAll('.pw').forEach(w => w.querySelectorAll('input').forEach(i => i.onchange = () => { w.dataset.touched = '1'; preview(); }));
       update();
     };
+    // 「戻っている／まだ」それぞれの場合の、前回からの利用額
+    const usageIf = (t, c, wait) => {
+      const prev = prevOf(t.date); if (!prev) return null;
+      const pend = new Set(t.pending || []); if (wait) pend.add(c); else pend.delete(c);
+      const tt = { ...t, pending: [...pend] }; const fake = { ...base, bills: { ...(card.bills || {}), ...collect() } };
+      return usageBetween(fake, prev, tt, deriveBills(fake, tt));
+    };
     const update = () => {
-      const t = tempSnap(); const bills = deriveBills(base, t);
+      let t = tempSnap();
+      if (t) for (const o of cands) {   // 触っていない質問は、ありそうなほうを選んでおく
+        const w = body.querySelector(`.pw[data-c="${o.c}"]`); if (!w || w.dataset.touched) continue;
+        const uB = usageIf(t, o.c, false), uW = usageIf(t, o.c, true);
+        const pick = uB != null && uB >= 0.5 * o.amt && uW > -1000 ? 'wait' : 'back';
+        w.querySelector(`input[value=${pick}]`).checked = true;
+        t = tempSnap();
+      }
+      const bills = deriveBills(base, t);
       body.querySelectorAll('.ex').forEach(i => {
         const b = bills[i.dataset.c];
         if (i.dataset.kind === 'estimate' && !i.dataset.touched) i.value = (b && b.kind === 'auto' && others.length) ? b.amount : '';
@@ -1198,6 +1257,10 @@ function snapSheet(card, edit) {
       if (prev) {
         const u = usageBetween(fake, prev, t, bills);
         txt += `前回（${fmtD(prev.date)}）から ${syen(u)}。`;
+        for (const o of cands) {
+          const uB = usageIf(t, o.c, false), uW = usageIf(t, o.c, true);
+          txt += ` ${fmtD(o.p)}の引落し分が戻っていれば ${syen(uB)}、まだなら ${syen(uW)}。`;
+        }
         if (u <= -5000) { bad = true; txt += ` 引落し分を除いても利用可能額が ${yen(-u)} 増えている。増枠なら限度額を書き換える。返品・キャンセルならこのままでよい。`; }
       }
       if (t.available > t.limit) { bad = true; txt += ' 利用可能額が限度額より大きい。限度額を確認する。'; }
