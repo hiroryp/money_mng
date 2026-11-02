@@ -50,6 +50,8 @@
   /* 現在残高 */
   .now { display: flex; justify-content: space-between; align-items: flex-end; padding: 6px 0 4px; }
   .now .lbl { font-size: 12.5px; color: var(--muted); }
+  .now { gap: 12px; }
+  .now .btn { flex-shrink: 0; white-space: nowrap; }
   .now .big { font-family: var(--num); font-size: 34px; font-weight: 700; letter-spacing: -.01em; line-height: 1.15; }
 
   /* 判定 */
@@ -171,6 +173,9 @@
   .ms { display: block; font-size: 12px; color: var(--muted); }
   .mv { font-size: 16px; font-weight: 700; white-space: nowrap; }
   .pos { color: var(--bal); } .neg { color: var(--card); }
+  details.applied { margin-top: 14px; }
+  details.applied summary { font-size: 12.5px; }
+  details.applied .events li { opacity: .7; }
   .kv .kd { display: block; font-size: 11.5px; color: var(--faint); }
   .kv .sub2 { font-size: 12px; color: var(--faint); padding-left: 10px; }
   .tag.on { border-style: solid; border-color: var(--bal); color: var(--bal); }
@@ -470,7 +475,8 @@ const payTarget = (S, p) => (p.pay && p.pay !== 'bank' && S.cards.some(c => c.id
 function compute(S, T) {
   const nowMk = ymOf(T);
   const bankStart = S.bank ? S.bank.date : T;
-  const end = addDays(bankStart, Number(S.horizon) || 90);
+  // 見通しは「今日」から決めた日数先まで（口座残高の入力が古くても期間が短くならないように）
+  const end = addDays(bankStart > T ? bankStart : T, Number(S.horizon) || 90);
   let firstMk = ymOf(S.created || T);   // 記録の始まり（作成日より前の日付で入力した場合はそこから）
   for (const c of S.cards) if (c.snaps && c.snaps.length && ymOf(c.snaps[0].date) < firstMk) firstMk = ymOf(c.snaps[0].date);
   if (firstMk > nowMk) firstMk = nowMk;
@@ -590,8 +596,16 @@ function compute(S, T) {
       for (const e of list) e.balAfter = running;
     }
     let minI = 0; series.forEach((p, i) => { if (p.low < series[minI].low) minI = i; });
-    forecast = { start, end, ev, series, minI, byDay,
-      firstNeg: series.find(p => p.low < 0), firstSafe: series.find(p => p.low < S.safeLine) };
+    // 口座残高を入れた日から今日までの入出金は、予定どおりあったとみなして「今日の見込み残高」に反映する。
+    // 画面に出す見通し・警告は今日から先だけを見る
+    const now = T > start ? T : start;
+    const ti = daysBetween(start, now);
+    const vs = series.slice(ti);
+    let vMin = 0; vs.forEach((p, i) => { if (p.low < vs[vMin].low) vMin = i; });
+    forecast = { start, end, ev, series, minI, byDay, now, balNow: series[ti].bal,
+      applied: ev.filter(e => e.date <= now), upcoming: ev.filter(e => e.date > now),
+      view: { series: vs, minI: vMin },
+      firstNeg: vs.find(p => p.low < 0), firstSafe: vs.find(p => p.low < S.safeLine) };
   }
   return { T, months, byMk, budgetNow, forecast, cardInfo, tls, bills, act };
 }
@@ -742,7 +756,7 @@ function renderHome(C) {
     return;
   }
   const F = C.forecast;
-  const minP = F.series[F.minI];
+  const minP = F.view.series[F.view.minI];
   let cls = '', msg;
   if (F.firstNeg) { cls = 'danger'; msg = `<strong>${fmtD(F.firstNeg.date)}</strong> に残高がマイナス（<span class="num">${yen(F.firstNeg.low)}</span>）になる見込み。`; }
   else if (F.firstSafe) { cls = 'warn'; msg = `<strong>${fmtD(F.firstSafe.date)}</strong> に安全ライン ${yen(S.safeLine)} を下回る（<span class="num">${yen(F.firstSafe.low)}</span>）見込み。`; }
@@ -750,7 +764,7 @@ function renderHome(C) {
 
   const notes = []; const T = C.T;
   const bAge = daysBetween(S.bank.date, T);
-  if (bAge >= 3) notes.push(`口座残高の入力が${bAge}日前のまま`);
+  if (bAge >= 3) notes.push(`口座残高の入力が${bAge}日前。そのあとの入出金は予定どおりあったとみなしている`);
   for (const c of S.cards) {
     const info = C.cardInfo[c.id]; const s = info.snap;
     if (!s) { notes.push(`${esc(c.name)}：利用可能額が未入力`); continue; }
@@ -759,17 +773,24 @@ function renderHome(C) {
   }
   if (!S.cards.length) notes.push('カードが未登録');
 
-  const upcoming = F.ev.slice(0, 20).map(e => {
+  const evRow = e => {
     const sub = e.kind === 'card' ? breakText(e.info) : '';
     const c = e.kind === 'in' ? 'in' : e.kind === 'card' ? 'cardc' : 'out';
     return `<li><span class="d">${fmtD(e.date)}</span>
       <span class="n">${esc(e.label)}${e.est ? '<span class="tag">見込み</span>' : ''}${e.kind === 'plan' ? '<span class="tag">予定</span>' : ''}${sub ? `<span class="sub">${sub}</span>` : ''}</span>
       <span class="a ${c}">${syen(e.amount)}<span class="after">残 ${yen(e.balAfter)}</span></span></li>`;
-  }).join('');
+  };
+  const upcoming = F.upcoming.slice(0, 20).map(evRow).join('');
+  const rolled = F.now > S.bank.date;
+  const appliedHtml = F.applied.length ? `<details class="applied"><summary>${fmtD(S.bank.date)}の入力から今日までに反映した入出金（${F.applied.length}件）</summary>
+      <ul class="events">${F.applied.map(evRow).join('')}</ul></details>` : '';
 
   v.innerHTML = top + budgetBlock(C) + `
     <section class="now">
-      <div><div class="lbl">口座残高　${fmtD(S.bank.date)}時点</div><div class="big">${yen(S.bank.amount)}</div></div>
+      <div>${rolled
+        ? `<div class="lbl">口座残高　今日の見込み</div><div class="big">${yen(F.balNow)}</div>
+           <div class="lbl">${fmtD(S.bank.date)}に入れた ${yen(S.bank.amount)} に、そのあとの入出金${F.applied.length}件を反映</div>`
+        : `<div class="lbl">口座残高　${fmtD(S.bank.date)}時点</div><div class="big">${yen(S.bank.amount)}</div>`}</div>
       <button class="btn ghost" data-act="bank">更新</button>
     </section>
     <section class="verdict ${cls}">${msg}${notes.length ? `<ul class="notes">${notes.map(n => `<li>${n}</li>`).join('')}</ul>` : ''}</section>
@@ -780,13 +801,14 @@ function renderHome(C) {
       <div class="range">${[30, 90, 180].map(r => `<button data-range="${r}" class="${Number(S.horizon) === r ? 'on' : ''}">${r === 30 ? '1か月' : r === 90 ? '3か月' : '6か月'}</button>`).join('')}</div>
     </section>
     <h3>これからの入出金</h3>
-    ${upcoming ? `<ul class="events">${upcoming}</ul>` : `<p class="hint">期間内に予定された入出金はない。収支タブで収入・家賃などを登録する。</p>`}`;
+    ${upcoming ? `<ul class="events">${upcoming}</ul>` : `<p class="hint">期間内に予定された入出金はない。収支タブで収入・家賃などを登録する。</p>`}
+    ${appliedHtml}`;
   drawChart(F);
 }
 
 function drawChart(F) {
   const W = 360, H = 190, pl = 4, pr = 4, pt = 12, pb = 20;
-  const s = F.series, n = s.length;
+  const s = F.view.series, n = s.length;
   let lo = Math.min(0, S.safeLine, ...s.map(p => p.low));
   let hi = Math.max(S.safeLine, ...s.map(p => p.bal));
   if (hi === lo) hi = lo + 1;
@@ -802,11 +824,11 @@ function drawChart(F) {
         <text x="${X(i) + 3}" y="${H - 6}" fill="#5c6570" font-size="10">${Number(p.date.slice(5, 7))}月</text>`;
   });
   let marks = '';
-  for (const e of F.ev) if (e.kind === 'card') {
-    const i = daysBetween(F.start, e.date);
+  for (const e of F.upcoming) if (e.kind === 'card') {
+    const i = daysBetween(F.now, e.date);
     marks += `<circle cx="${X(i)}" cy="${Y(s[i].bal)}" r="3.2" fill="#e46f7a" stroke="#1a1e24" stroke-width="1.5"/>`;
   }
-  const mi = F.minI; const safeY = Y(S.safeLine), zeroY = Y(0);
+  const mi = F.view.minI; const safeY = Y(S.safeLine), zeroY = Y(0);
   $('#chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" id="svg">
     <defs><linearGradient id="g" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#5cc2ad" stop-opacity=".22"/><stop offset="1" stop-color="#5cc2ad" stop-opacity="0"/></linearGradient></defs>
     ${ticks}
@@ -918,7 +940,7 @@ function renderCards(C) {
       <button class="btn small" data-act="bill" data-id="${card.id}" data-c="${c}" style="margin-left:4px">確定額を入力</button></div>`).join('');
     let pays = '';
     if (C.forecast) {
-      const ps = info.pays;
+      const ps = info.pays.filter(p => p.pay > C.forecast.now);
       pays = ps.length ? `<div class="pays">${ps.map(p => `<div class="pay"><span>${fmtD(p.pay)}${p.final ? '' : '<span class="tag">見込み</span>'}
         <span class="break">${breakText(p)}</span></span>
         <span class="num cardc">${yen(p.total)}</span></div>`).join('')}</div>` : '';
@@ -1042,7 +1064,7 @@ function bankSheet() {
   openSheet('口座残高', `
     <div class="two">
       <div class="f"><label for="bd">日付</label><input id="bd" type="date" value="${today()}" max="${today()}"></div>
-      <div class="f"><label for="ba">残高</label><input id="ba" inputmode="numeric" value="${S.bank ? S.bank.amount : ''}" placeholder="例 150000"></div>
+      <div class="f"><label for="ba">残高</label><input id="ba" inputmode="numeric" value="" placeholder="${S.bank ? `見込み ${Math.round(compute(S, today()).forecast.balNow)}` : '例 150000'}"></div>
     </div>
     <p class="hint">その日の引落し・入金が反映された後の残高を入れる。</p>
     <div class="sheet-actions"><button class="btn primary" id="ok">保存</button></div>`, () => {
