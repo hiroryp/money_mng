@@ -324,7 +324,30 @@ function closingsBetween(card, a, b) { // [a, b] にある締め日（a が締�
   return out;
 }
 // 締めごとの金額。自分で入れた額（確定・推定）を優先し、無ければ前後の入力を日数で按分して推定
-function deriveBills(card, extraSnap) {
+/* 2回の入力のあいだ (from, to] の利用 usage を日ごとに配る。
+   日付の分かっている分（サブスク・そのカードの出費予定）はその日に置き、
+   残りは「そのカードを使う日」（ローテーション）に、その月の予算のペースで配る。使う日がなければ全日に均等。
+   ctx（S と act）がなければ全日に均等。返り値は [日付, その日の額] の配列 */
+function spreadUsage(card, from, to, usage, ctx) {
+  const days = [];
+  for (let d = addDays(from, 1); d <= to; d = addDays(d, 1)) days.push(d);
+  if (!ctx) return days.map(d => [d, usage / days.length]);
+  const { S, act } = ctx;
+  const pts = {}; let known = 0;
+  for (const s of S.subs) if (s.cardId === card.id) for (const ch of subCharges(s, from, to)) { pts[ch.date] = (pts[ch.date] || 0) + ch.amount; known += ch.amount; }
+  for (const p of S.planned) if (payTarget(S, p) === card.id && p.date > from && p.date <= to) { pts[p.date] = (pts[p.date] || 0) + Number(p.amount); known += Number(p.amount); }
+  let wsum = 0, ssum = 0;
+  const ws = days.map(d => {
+    const ac = act(d); const share = ac.some(c => c.id === card.id) ? 1 / ac.length : 0;
+    const B = budgetFor(S, ymOf(d)); const pace = B != null && B > 0 ? B / dim(parse(d).getFullYear(), parse(d).getMonth()) : 0;
+    wsum += share * pace; ssum += share; return [share * pace, share];
+  });
+  const rest = usage - known;
+  return days.map((d, i) => [d, (pts[d] || 0) + rest * (wsum > 0 ? ws[i][0] / wsum : ssum > 0 ? ws[i][1] / ssum : 1 / days.length)]);
+}
+const makeCtx = S => { const cache = {}; return { S, act: d => cache[d] || (cache[d] = activeOn(S, d)) }; };
+
+function deriveBills(card, extraSnap, ctx) {
   const bills = {}; for (const [c, v] of Object.entries(card.bills || {})) bills[c] = { ...v };
   let snaps = (card.snaps || []).slice();
   if (extraSnap) { snaps = snaps.filter(x => x.date !== extraSnap.date); snaps.push(extraSnap); snaps.sort((x, y) => x.date < y.date ? -1 : 1); }
@@ -338,10 +361,13 @@ function deriveBills(card, extraSnap) {
     let paid = 0;
     for (const c of restoredBetween(card, a, b)) paid += c === a.date && !bills[c] ? unconfA : amt(c);
     const usage = unpaidOf(card, b) - unpaidOf(card, a) + paid;
-    const total = Math.max(daysBetween(a.date, b.date), 1);
+    // 締め日をまたいだ利用は、予算の計算と同じ配り方で締めごとに分ける
+    const cum = {}; let run = 0;
+    for (const [d, x] of spreadUsage(card, a.date, b.date, usage, ctx)) { run += x; cum[d] = run; }
+    const cumAt2 = d => d <= a.date ? 0 : cum[d];
     cs.forEach((c, k) => {
       const from = k === 0 ? a.date : cs[k - 1];
-      const v = (k === 0 ? unconfA : 0) + usage * daysBetween(from, c) / total;
+      const v = (k === 0 ? unconfA : 0) + cumAt2(c) - cumAt2(from);
       if (!bills[c]) bills[c] = { amount: Math.max(0, Math.round(v)), kind: 'auto' };
     });
   }
@@ -388,21 +414,10 @@ function cardTimeline(S, card, bills, act) {
   const sn = card.snaps || [];
   if (!sn.length) return null;
   const cum = {}; let total = 0;
+  const ctx = { S, act };
   const spread = (from, to, usage) => {
-    const pts = {}; let known = 0;
-    for (const s of S.subs) if (s.cardId === card.id) for (const ch of subCharges(s, from, to)) { pts[ch.date] = (pts[ch.date] || 0) + ch.amount; known += ch.amount; }
-    for (const p of S.planned) if (payTarget(S, p) === card.id && p.date > from && p.date <= to) { pts[p.date] = (pts[p.date] || 0) + Number(p.amount); known += Number(p.amount); }
-    const days = []; let wsum = 0, ssum = 0;
-    for (let d = addDays(from, 1); d <= to; d = addDays(d, 1)) {
-      const ac = act(d); const share = ac.some(c => c.id === card.id) ? 1 / ac.length : 0;
-      const B = budgetFor(S, ymOf(d)); const pace = B != null && B > 0 ? B / dim(parse(d).getFullYear(), parse(d).getMonth()) : 0;
-      days.push([d, share * pace, share]); wsum += share * pace; ssum += share;
-    }
-    const rest = usage - known; let run = total;
-    for (const [d, w, share] of days) {
-      run += (pts[d] || 0) + rest * (wsum > 0 ? w / wsum : ssum > 0 ? share / ssum : 1 / days.length);
-      cum[d] = run;
-    }
+    let run = total;
+    for (const [d, x] of spreadUsage(card, from, to, usage, ctx)) { run += x; cum[d] = run; }
     total += usage; cum[to] = total;   // 端数のずれを入力日でそろえる
   };
   let first = sn[0].date, pre = 0;
@@ -487,7 +502,8 @@ function compute(S, T) {
   const activeCache = {};
   const act = d => activeCache[d] || (activeCache[d] = activeOn(S, d));
   const bills = {}, tls = {};
-  for (const c of S.cards) { bills[c.id] = deriveBills(c); tls[c.id] = cardTimeline(S, c, bills[c.id], act); }
+  const ctx = { S, act };
+  for (const c of S.cards) { bills[c.id] = deriveBills(c, null, ctx); tls[c.id] = cardTimeline(S, c, bills[c.id], act); }
   const absorbed = p => { const t = payTarget(S, p); if (t === 'bank') return false; const tl = tls[t]; return !!tl && tl.first < p.date && p.date <= tl.last; };
 
   /* 月ごと */
@@ -1192,7 +1208,7 @@ function snapSheet(card, edit) {
     // 前回の入力のあとに引落日が来た締め（＝枠が戻っているか聞く必要がある分）
     let cands = [];
     const payCands = D => {
-      const prev = prevOf(D); const bills = deriveBills(base); const out = [];
+      const prev = prevOf(D); const bills = deriveBills(base, null, makeCtx(S)); const out = [];
       let c = lastClosingBefore(card, D);
       for (let i = 0; i < 4; i++, c = prevClosing(card, c)) {
         const p = paymentFor(card, c);
@@ -1242,7 +1258,7 @@ function snapSheet(card, edit) {
       const prev = prevOf(t.date); if (!prev) return null;
       const pend = new Set(t.pending || []); if (wait) pend.add(c); else pend.delete(c);
       const tt = { ...t, pending: [...pend] }; const fake = { ...base, bills: { ...(card.bills || {}), ...collect() } };
-      return usageBetween(fake, prev, tt, deriveBills(fake, tt));
+      return usageBetween(fake, prev, tt, deriveBills(fake, tt, makeCtx(S)));
     };
     const update = () => {
       let t = tempSnap();
@@ -1253,7 +1269,7 @@ function snapSheet(card, edit) {
         w.querySelector(`input[value=${pick}]`).checked = true;
         t = tempSnap();
       }
-      const bills = deriveBills(base, t);
+      const bills = deriveBills(base, t, makeCtx(S));
       body.querySelectorAll('.ex').forEach(i => {
         const b = bills[i.dataset.c];
         if (i.dataset.kind === 'estimate' && !i.dataset.touched) i.value = (b && b.kind === 'auto' && others.length) ? b.amount : '';
@@ -1273,7 +1289,7 @@ function snapSheet(card, edit) {
       const pv = $('#pv'); const t = tempSnap();
       if (!t) { pv.className = 'preview'; pv.textContent = '利用可能額だけで保存できる。'; return; }
       const fake = { ...base, bills: { ...(card.bills || {}), ...collect() } };
-      const bills = deriveBills(fake, t); const st = stateAt(fake, t, bills); const prev = prevOf(t.date);
+      const bills = deriveBills(fake, t, makeCtx(S)); const st = stateAt(fake, t, bills); const prev = prevOf(t.date);
       let txt = `利用総額 ${yen(st.U)}` + (st.closed.length ? `（締め分 ${yen(st.closed.reduce((x, o) => x + o.amount, 0))}／締め後 ${yen(st.unconf)}）` : '') + '。';
       let bad = false;
       if (prev) {
@@ -1307,7 +1323,7 @@ function snapSheet(card, edit) {
 }
 
 function billSheet(card, c) {
-  const bills = deriveBills(card); const cur = bills[c];
+  const bills = deriveBills(card, null, makeCtx(S)); const cur = bills[c];
   const confDefault = today() >= askFrom(card, c) || (cur && cur.kind === 'confirmed');
   openSheet(`${fmtD(c)}締めの金額`, `
     <p class="hint">${fmtD(paymentFor(card, c))}に引き落とされる分。今は ${cur ? `${kindLabel(cur.kind)} ${yen(cur.amount)}` : '未設定'}。</p>
