@@ -323,7 +323,6 @@ function closingsBetween(card, a, b) { // [a, b] にある締め日（a が締�
   while (c <= b && out.length < 36) { out.push(c); c = cycleOf(card, addDays(c, 1)); }
   return out;
 }
-// 締めごとの金額。自分で入れた額（確定・推定）を優先し、無ければ前後の入力を日数で按分して推定
 /* 2回の入力のあいだ (from, to] の利用 usage を日ごとに配る。
    日付の分かっている分（サブスク・そのカードの出費予定）はその日に置き、
    残りは「そのカードを使う日」（ローテーション）に、その月の予算のペースで配る。使う日がなければ全日に均等。
@@ -347,6 +346,7 @@ function spreadUsage(card, from, to, usage, ctx) {
 }
 const makeCtx = S => { const cache = {}; return { S, act: d => cache[d] || (cache[d] = activeOn(S, d)) }; };
 
+// 締めごとの金額。自分で入れた額（確定・推定）を優先し、無ければ前後の入力から、上の配り方で締めごとに分けて推定
 function deriveBills(card, extraSnap, ctx) {
   const bills = {}; for (const [c, v] of Object.entries(card.bills || {})) bills[c] = { ...v };
   let snaps = (card.snaps || []).slice();
@@ -390,19 +390,28 @@ function pendingConfirms(card, D, bills) {
 }
 const kindLabel = k => ({ confirmed: '確定', estimate: '自分の推定', auto: '自動推定', none: '未設定' }[k] || '');
 
-// 締め日を変えたとき、入力済みの確定額・推定を「同じ月の引落し」に付け替える
+// 締め日・引落日を変えたとき、古い締め日を「同じ月に引き落とされる」新しい締め日に対応させる
+function remapClosing(oldCard, newCard, c) {
+  const payMonth = ymOf(paymentFor(oldCard, c));
+  for (let k = -2; k <= 2; k++) {
+    const d = parse(c); const nc = closingIn(newCard, d.getFullYear(), d.getMonth() + k);
+    if (ymOf(paymentFor(newCard, nc)) === payMonth) return nc;
+  }
+  return null;
+}
+// 入力済みの確定額・推定と、入力ごとの「枠の戻り待ち」を付け替える
 function remapBills(oldCard, newCard) {
   const out = {}; const dropped = [];
   for (const [c, b] of Object.entries(oldCard.bills || {})) {
-    const payMonth = ymOf(paymentFor(oldCard, c));
-    let target = null;
-    for (let k = -2; k <= 2 && !target; k++) {
-      const d = parse(c); const nc = closingIn(newCard, d.getFullYear(), d.getMonth() + k);
-      if (ymOf(paymentFor(newCard, nc)) === payMonth) target = nc;
-    }
+    const target = remapClosing(oldCard, newCard, c);
     if (target && !out[target]) out[target] = b; else dropped.push(c);
   }
-  return { bills: out, dropped };
+  const snaps = (oldCard.snaps || []).map(sn => {
+    if (!sn.pending) return sn;
+    const p = [...new Set(sn.pending.map(c => remapClosing(oldCard, newCard, c)).filter(Boolean))];
+    const x = { ...sn }; if (p.length) x.pending = p; else delete x.pending; return x;
+  });
+  return { bills: out, dropped, snaps };
 }
 
 /* 入力の記録から、カードの累積利用額を日付でたどれるようにする。
@@ -476,9 +485,18 @@ function budgetFor(S, mk) {
 }
 const dailyCards = S => S.cards.filter(c => c.daily !== false);
 // その日に使うカード：締め日を直近で過ぎたカード（締め日当日はまだ前のカード）。同じ締め日が複数あれば等分
+// カードを使い始めた日（この日からローテーションに入る）。それより前の日付で入力した記録があれば、そちらを優先。
+// since のないカード（以前から使っているカード）は、いつでもローテーションに入る
+function sinceOf(c) {
+  if (!c.since) return null;
+  const f = c.snaps && c.snaps.length ? c.snaps[0].date : null;
+  return f && f < c.since ? f : c.since;
+}
 function activeOn(S, d) {
   let best = null, out = [];
   for (const c of dailyCards(S)) {
+    const since = sinceOf(c);
+    if (since && d < since) continue;
     const lc = lastClosingBefore(c, d);
     if (best === null || lc > best) { best = lc; out = [c]; } else if (lc === best) out.push(c);
   }
@@ -575,7 +593,9 @@ function compute(S, T) {
     for (const card of S.cards) {
       const info = cardInfo[card.id]; const snap = info.snap; const tl = tls[card.id];
       const st = snap ? stateAt(card, snap, bills[card.id]) : null; info.st = st;
-      const D = snap ? snap.date : start;
+      // 入力がまだないカードは、使い始めた日から見込みを入れる（使い始めた日が分からなければ口座残高の日から）
+      const since = sinceOf(card);
+      const D = snap ? snap.date : since && addDays(since, -1) < start ? addDays(since, -1) : start;
       const cycles = {};
       const get = c => cycles[c] || (cycles[c] = { base: 0, bud: 0, plan: 0, subs: 0, subsIn: 0, final: false, kind: 'open' });
       if (st) for (const o of st.closed) { const g = get(o.c); g.base = o.amount; g.final = o.kind === 'confirmed'; g.kind = o.kind; }
@@ -637,6 +657,7 @@ function migrate(st, T) {
   for (const c of st.cards) {
     c.bills = c.bills || {}; if (c.confirmAfter == null) c.confirmAfter = 15;
     if (c.daily == null) c.daily = true;
+    if (c.since != null && !isISO(c.since)) delete c.since;
     if (c.dailyEst) legacyDaily += Number(c.dailyEst) || 0;
     delete c.dailyEst;
     c.snaps = (c.snaps || []).filter(x => x && isISO(x.date)).map(x => {   // 未確定額で入力していた頃の形式も変換
@@ -752,7 +773,7 @@ function budgetBlock(C) {
     if (!s) notes.push(`今使っているカード（${esc(c.name)}）の利用可能額が未入力`);
     else if (daysBetween(s.date, T) >= 3) notes.push(`今使っているカード（${esc(c.name)}）の最終入力が${daysBetween(s.date, T)}日前。入力すると「使った」が最新になる`);
   }
-  if (S.cards.length && !dailyCards(S).length) notes.push('日常の支払いに使うカードがない（カードの編集で設定）');
+  if (S.cards.length && !dailyCards(S).length) notes.push('メインカードがない（カードの編集で設定）');
   return `<section class="budget">
     <div class="bhead"><span class="lbl">${fmtM(mk)} あと使える</span><button class="btn small ghost" data-act="budget">予算 ${yen(b.B)}</button></div>
     <div class="big num ${over ? 'neg' : ''}">${over ? `${yen(-b.remaining)} オーバー` : yen(b.remaining)}</div>
@@ -917,17 +938,24 @@ function renderMonths(C) {
 
 /* ---------- カード ---------- */
 function rotationText(C, card) {
-  const mk = C.budgetNow.mk; const ranges = []; let st = null, prev = null;
-  for (let d = monthStart(mk); d <= monthEnd(mk); d = addDays(d, 1)) {
-    const on = C.act(d).some(c => c.id === card.id);
-    if (on && st === null) st = d;
-    if (!on && st !== null) { ranges.push([st, prev]); st = null; }
-    prev = d;
-  }
-  if (st !== null) ranges.push([st, prev]);
-  if (!ranges.length) return '';
+  // 今月の担当日。今月にない（使い始めたばかりなど）なら来月の担当日
+  const rangesOf = mk => {
+    const ranges = []; let st = null, prev = null;
+    for (let d = monthStart(mk); d <= monthEnd(mk); d = addDays(d, 1)) {
+      const on = C.act(d).some(c => c.id === card.id);
+      if (on && st === null) st = d;
+      if (!on && st !== null) { ranges.push([st, prev]); st = null; }
+      prev = d;
+    }
+    if (st !== null) ranges.push([st, prev]);
+    return ranges;
+  };
   const dd = s => `${Number(s.slice(8))}日`;
-  return `${fmtM(mk)}は ${ranges.map(([a, b]) => a === b ? dd(a) : `${dd(a)}〜${dd(b)}`).join('、')} に使う想定`;
+  for (const mk of [C.budgetNow.mk, addMonths(C.budgetNow.mk, 1)]) {
+    const r = rangesOf(mk);
+    if (r.length) return `${fmtM(mk)}は ${r.map(([a, b]) => a === b ? dd(a) : `${dd(a)}〜${dd(b)}`).join('、')} に使う想定`;
+  }
+  return '';
 }
 function renderCards(C) {
   const v = $('#view');
@@ -968,7 +996,7 @@ function renderCards(C) {
         <span class="num">${u != null ? syen(u) : '—'}</span>
         <button class="btn small" data-act="editSnap" data-id="${card.id}" data-date="${x.date}">直す</button></li>`;
     }).join('');
-    const rot = card.daily !== false ? rotationText(C, card) : '日常の支払いには使わない設定';
+    const rot = card.daily !== false ? rotationText(C, card) : 'サブカード（予算は割り振らない。使った分は数える）';
     let preHint = '';
     if (info.tl && info.tl.preSkipped) {
       const unk = stateAt(card, snaps[0], bills).closed.filter(o => o.kind === 'none');
@@ -1156,8 +1184,10 @@ function cardSheet(card) {
       <div class="f"><label for="cp">引落日</label><select id="cp">${dayOpts(c.payDay)}</select></div>
     </div>
     <div class="f"><span class="flabel">引落しは締め日の</span>${seg('po', [['1', '翌月'], ['2', '翌々月']], Number(c.payOffset) === 2 ? '2' : '1')}</div>
-    <div class="f"><span class="flabel">日常の支払い</span>${seg('cdl', [['1', '使う'], ['0', '使わない']], c.daily !== false ? '1' : '0')}</div>
-    <p class="hint">「使う」にしたカードは、締め日を過ぎたカードから順に使う前提で、予算を日割りで振り分ける。サブスク専用などは「使わない」。</p>
+    <div class="f"><span class="flabel">カードの種類</span>${seg('cdl', [['1', 'メイン'], ['0', 'サブ']], c.daily !== false ? '1' : '0')}</div>
+    <p class="hint">メインは、締め日を過ぎたカードから順に使う前提で、予算を日割りで割り振る。サブ（限度額が足りないときやポイントのためにたまに使うカード、サブスク専用など）には予算を割り振らない。サブで実際に使った分は「使った」と引落しの見込みに入る。</p>
+    <div class="f"><label for="csn">使い始めた日</label><input id="csn" type="date" value="${card ? (card.since || '') : (S.cards.some(x => x.snaps && x.snaps.length) ? today() : '')}"></div>
+    <p class="hint">新しく作ったカードなら、この日からローテーションに入る（それより前の日の割り振りは変わらない）。前から使っているカードを登録するときは空欄にする。</p>
     <div class="f"><label for="ca">確定額を聞き始めるのは締め日の何日後か</label><input id="ca" inputmode="numeric" value="${c.confirmAfter ?? 15}"></div>
     <p class="hint">引落日の前日より遅くはならない。</p>
     <div class="sheet-actions">${card ? '<button class="btn danger" id="del">削除</button>' : ''}<button class="btn primary" id="ok">保存</button></div>`, () => {
@@ -1167,13 +1197,17 @@ function cardSheet(card) {
       const ca = num(val('ca'));
       const data = { name, limit, closeDay: Number(val('cc')), payDay: Number(val('cp')),
         payOffset: Number(radio('po')), daily: radio('cdl') === '1', confirmAfter: isNaN(ca) || ca < 0 ? 15 : ca };
+      const sn = val('csn');
+      if (sn && !isISO(sn)) return fail('使い始めた日の形が違う');
+      if (sn) data.since = sn;
       if (card) {
         if (Number(card.closeDay) !== data.closeDay || Number(card.payOffset) !== data.payOffset || Number(card.payDay) !== data.payDay) {
           const r = remapBills(card, { ...card, ...data });
           if (r.dropped.length && !confirm(`締め日・引落日の変更で、入力済みの締め分の金額 ${r.dropped.length}件が新しい設定に合わなくなる。合わない分は自動推定に戻る。保存する？`)) return;
-          card.bills = r.bills;
+          card.bills = r.bills; card.snaps = r.snaps;
         }
         Object.assign(card, data);
+        if (!sn) delete card.since;
       } else S.cards.push({ id: uid(), snaps: [], bills: {}, ...data });
       commit();
     };
